@@ -92,6 +92,7 @@ async def index(request: Request):
         visit_count = 1
 
     greeting = get_greeting()
+    current_year = datetime.now(BEIJING_TZ).year
     body = f"""
         <div class="header">WAP导航页</div>
         <div class="content">
@@ -101,26 +102,26 @@ async def index(request: Request):
             <div style="margin: 8px 0; text-align: center; background-color: gainsboro; padding: 3px; border: 1px solid silver;">
                 <form action="//wap.baidu.com/s" method="get" style="margin: 0; padding: 0;">
                     <input type="hidden" name="pu" value="sz@1321_1001" />
-                    <input type="text" name="word" style="width: 50%; vertical-align: middle;" />
-                    <input type="submit" value="百度一下" style="vertical-align: middle;" />
+                    <input type="text" name="word" style="width: 50%;" align="absmiddle" />
+                    <input type="submit" value="百度一下" align="absmiddle" />
                 </form>
             </div>
             <hr/>
             <b>:: 社交互动 ::</b>
-            <div class="item even">[1] <a href="/redirect?url=//qq.ekiz.top&amp;name=QQ群互通" accesskey="1">QQ群互通</a></div>
-            <div class="item odd">[2] <a href="/redirect?url=//qq.ekiz.top/wml&amp;name=互通(WAP版)" accesskey="2">互通(WAP版)</a></div>
+            <div class="item even">[1] <a href="/redirect?url=//qq.ekiz.top&amp;name=QQ群互通" accesskey="2">QQ群互通</a></div>
+            <div class="item odd">[2] <a href="/redirect?url=//qq.ekiz.top/wml&amp;name=互通(WAP版)" accesskey="3">互通(WAP版)</a></div>
             <hr/>
             <b>:: 资讯生活 ::</b>
-            <div class="item odd">[3] <a href="/redirect?url=/news&amp;name=新闻网站" accesskey="3">新闻网站</a></div>
-            <div class="item even">[4] <a href="/redirect?url=/weather&amp;name=天气预报" accesskey="4">天气预报</a></div>
+            <div class="item odd">[3] <a href="/redirect?url=/news&amp;name=新闻网站" accesskey="4">新闻网站</a></div>
+            <div class="item even">[4] <a href="/redirect?url=/weather&amp;name=天气预报" accesskey="5">天气预报</a></div>
             <hr/>
             <b>:: 工具娱乐 ::</b>
-            <div class="item odd">[5] <a href="/redirect?url=//ai.ekiz.top&amp;name=AI普通版(账密a)" accesskey="5">AI普通版</a></div>
-            <div class="item even">[6] <a href="/redirect?url=//ai.ekiz.top/nokia&amp;name=AI(WAP版)" accesskey="6">AI(WAP版)</a></div>
+            <div class="item odd">[5] <a href="/redirect?url=//ai.ekiz.top&amp;name=AI普通版(账密a)" accesskey="9">AI普通版</a></div>
+            <div class="item even">[6] <a href="/redirect?url=//ai.ekiz.top/nokia&amp;name=AI(WAP版)" accesskey="0">AI(WAP版)</a></div>
         </div>
         <div class="nav">
-            <small>浙ICP备08012345号-1</small><br/>
-            <small>&#169; 2026 Ekiz WAP</small>
+            浙ICP备08012345号-1<br/>
+            &#169; {current_year} Ekiz WAP
         </div>
     """
     return render_xhtml(request, "WAP导航页", body)

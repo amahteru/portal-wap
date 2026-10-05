@@ -394,7 +394,7 @@ def generate_xhtml_response(request: Request, title: str, body_content: str, sta
         request,
         title,
         body_content,
-        extra_css="a:visited { color: purple; }",
+        extra_css="a:visited { color: purple; } .content { line-height: 1.6; text-align: justify; word-wrap: break-word; }",
         status_code=status_code,
         headers={"Cache-Control": "public, max-age=300"},
     )
@@ -411,7 +411,6 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
     page = max(1, page)
     if cat_id not in RSS_FEEDS:
         cat_id = "importnews"
-    cat_name = RSS_FEEDS[cat_id]["name"]
 
     nav_links = []
     for cat_key, cat_info in RSS_FEEDS.items():
@@ -456,7 +455,7 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
         page_nav_html += f"<br/>(第{page}页)"
 
     body_content = f"""
-    <div class="header">WAP新闻 - {cat_name}</div>
+    <div class="header">WAP今日新闻</div>
     <div class="content">
         {nav_html}
         <hr/>
@@ -465,11 +464,10 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
         {page_nav_html}
     </div>
     <div class="nav">
-        <a href="/">[返回门户首页]</a><br/>
-        <small>&#169; 2026 Ekiz WAP</small>
+        <a href="/">[返回门户首页]</a>
     </div>
     """
-    return generate_xhtml_response(request, f"WAP新闻 - {cat_name}", body_content)
+    return generate_xhtml_response(request, "今日新闻", body_content)
 
 
 @news_router.get("/article")
@@ -594,10 +592,10 @@ async def get_article(
     cat_name = RSS_FEEDS.get(cat, {}).get("name", "要闻")
 
     body_content = f"""
-    <div class="header">WAP新闻详情</div>
+    <div class="header">新闻详情</div>
     <div class="content">
         <b>{safe_title}</b><br/>
-        <small style="color: dimgray;">{html.escape(pub_date)}</small>
+        {html.escape(pub_date)}
         <hr/>
         {safe_desc}<br/>
     </div>
@@ -606,7 +604,7 @@ async def get_article(
         <a href="/">[返回门户首页]</a>
     </div>
     """
-    return generate_xhtml_response(request, safe_title, body_content)
+    return generate_xhtml_response(request, "新闻详情", body_content)
 
 
 @news_router.get("/image-proxy")
