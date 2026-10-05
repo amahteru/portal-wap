@@ -99,10 +99,13 @@ def serialize_item(item: Any, cat_id: str) -> dict:
         summary = getattr(item, "summary", getattr(item, "description", ""))
         published = getattr(item, "published", "")
 
+    link_hash = hashlib.md5(link.encode("utf-8")).hexdigest() if link else ""
+
     return {
         "cat_id": cat_id,
         "title": title,
         "link": link,
+        "link_hash": link_hash,
         "summary": summary,
         "published": published,
         "published_parsed": pub_parsed,
@@ -124,6 +127,7 @@ async def load_all_from_db() -> None:
         return
     try:
         await news_col.create_index([("cat_id", 1), ("published_parsed", -1)])
+        await news_col.create_index([("cat_id", 1), ("link_hash", 1)])
         await news_col.create_index([("link", 1)], unique=True)
 
         img_col = db.get_image_collection()
@@ -607,11 +611,19 @@ async def get_article(
                 item = it
                 break
 
-    if not item and target_id:
+    if not item and (target_id or url):
         col, _ = db.get_news_collections()
         if col is not None:
             try:
-                doc = await col.find_one({"cat_id": cat, "link": {"$regex": target_id}})
+                if target_id:
+                    doc = await col.find_one({"cat_id": cat, "link_hash": target_id})
+                    if not doc:
+                        doc = await col.find_one({"cat_id": cat, "link": target_id})
+                elif url:
+                    doc = await col.find_one({"cat_id": cat, "link": url})
+                else:
+                    doc = None
+
                 if doc:
                     item = deserialize_item(doc)
             except Exception:

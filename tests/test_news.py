@@ -59,6 +59,30 @@ class TestNewsEndpoints(unittest.TestCase):
             resp = self.client.get("/news/article?cat=importnews&id=nonexistent")
             self.assertEqual(resp.status_code, 404)
 
+    def test_news_article_db_fallback_by_link_hash(self):
+        import hashlib
+        link = "https://example.com/fallback_art"
+        item_hash = hashlib.md5(link.encode("utf-8")).hexdigest()
+        fake_doc = {
+            "title": "回退文章标题",
+            "link": link,
+            "link_hash": item_hash,
+            "summary": "回退文章摘要",
+            "published": "2026-10-05 13:00:00",
+            "full_content": "这是从数据库回退查询出的正文。"
+        }
+        mock_col = AsyncMock()
+        mock_col.find_one.return_value = fake_doc
+
+        with patch("routers.news.get_news_items", new_callable=AsyncMock) as mock_items:
+            mock_items.return_value = []
+            with patch("core.db.get_news_collections", return_value=(mock_col, AsyncMock())):
+                resp = self.client.get(f"/news/article?cat=importnews&id={item_hash}")
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("回退文章标题", resp.text)
+                self.assertIn("这是从数据库回退查询出的正文", resp.text)
+                mock_col.find_one.assert_called_with({"cat_id": "importnews", "link_hash": item_hash})
+
     def test_news_image_proxy_resize_success(self):
         import io
         from PIL import Image
