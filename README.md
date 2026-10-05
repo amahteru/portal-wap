@@ -44,22 +44,18 @@ portal-wap/
 ├── app.py                  # FastAPI 主应用入口、导航核心路由、中间件与生命周期
 ├── core/
 │   ├── __init__.py
-│   └── db.py               # MongoDB 异步驱动封装与内存降级存储引擎
+│   ├── db.py               # MongoDB 异步驱动封装与内存降级存储引擎
+│   └── http.py             # 全局共享 httpx.AsyncClient 连接池管理
 ├── routers/
 │   ├── __init__.py
 │   ├── weather.py          # 天气模块路由、城市数据检索与 AQI 解析
 │   └── news.py             # 新闻模块路由、RSS 调度、正文抓取与图片防盗链代理
-├── tests/
-│   ├── __init__.py
-│   ├── test_db.py          # 数据库与缓存模式测试
-│   ├── test_nav.py         # 导航与重定向功能测试
-│   ├── test_weather.py     # 天气查询与缓存测试
-│   ├── test_news.py        # 新闻分类、文章读取与图片代理测试
-│   └── test_e2e.py         # 全流程端到端集成测试
 ├── Dockerfile              # 生产环境 Docker 容器定义 (Python 3.11-slim)
+├── .dockerignore           # 容器构建忽略清单
 ├── requirements.txt        # Python 依赖清单
 ├── favicon.ico             # 站点图标
 ├── speeddial-icon.png      # 快捷拨号大图标
+├── LICENSE                 # MIT 开源协议
 └── README.md               # 项目说明文档
 ```
 
@@ -99,7 +95,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 ```bash
 # 克隆仓库
-git clone https://github.com/tzucet/portal-wap.git
+git clone https://github.com/amahteru/portal-wap.git
 cd portal-wap
 
 # 创建虚拟环境（可选）
@@ -124,13 +120,6 @@ uvicorn app:app --host 0.0.0.0 --port 7860 --reload
 - 资讯新闻：`http://localhost:7860/news`
 - 健康检查：`http://localhost:7860/health`
 - 访客统计：`http://localhost:7860/admin/ips`
-
-### 3. 运行完整测试套件
-项目配备了完整的自动化单元测试与端到端测试覆盖：
-
-```bash
-python -m unittest discover tests
-```
 
 ---
 
