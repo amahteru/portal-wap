@@ -1,0 +1,14 @@
+.git
+.gitignore
+.superpowers
+tests
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.env
+.venv
+venv
+README.md
+docs
