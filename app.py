@@ -1,7 +1,6 @@
 import os
-import json
-import logging
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -9,24 +8,20 @@ from typing import Optional
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse, FileResponse, JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
-import httpx
 
 from core import db
 from core.http import init_http_client, close_http_client, get_http_client
 from routers.weather import weather_router
 from routers.news import news_router, start_news_tasks, stop_news_tasks
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
 SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 
-# 内存访客统计字典（降级备用）
-memory_visitors = {
-    "current_date": "",
-    "ips": {}
-}
+_background_tasks = set()
 
 def get_beijing_date() -> str:
     tz_bj = timezone(timedelta(hours=8))
@@ -44,8 +39,7 @@ def get_greeting() -> str:
     else:
         return "夜深了，注意保护视力"
 
-async def fetch_and_save_ip_location(ip: str):
-    nav_ips, _ = db.get_nav_collections()
+async def fetch_and_save_ip_location(ip: str, today: str):
     if not ip or ip.startswith(("127.", "192.168.", "10.", "172.")):
         location = "本地/局域网IP"
     else:
@@ -61,13 +55,10 @@ async def fetch_and_save_ip_location(ip: str):
             logger.warning(f"获取 IP 归属地失败 ({ip}): {e}")
             location = "查询超时或失败"
 
-    if nav_ips is not None:
-        try:
-            await nav_ips.update_one({"_id": ip}, {"$set": {"location": location}})
-        except Exception:
-            pass
-    elif ip in memory_visitors["ips"]:
-        memory_visitors["ips"][ip]["location"] = location
+    try:
+        await db.update_visitor_location(ip, today, location)
+    except Exception as e:
+        logger.error(f"更新 IP 归属地入库异常: {e}")
 
 XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
@@ -132,21 +123,6 @@ XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 async def lifespan(app: FastAPI):
     await db.init_db()
     await init_http_client()
-    today = get_beijing_date()
-    nav_ips, nav_meta = db.get_nav_collections()
-    if nav_meta is not None:
-        try:
-            meta = await nav_meta.find_one({"_id": "meta"})
-            if meta and meta.get("current_date") != today:
-                if nav_ips is not None:
-                    await nav_ips.delete_many({})
-                await nav_meta.update_one({"_id": "meta"}, {"$set": {"current_date": today}}, upsert=True)
-            elif not meta:
-                await nav_meta.insert_one({"_id": "meta", "current_date": today})
-        except Exception as e:
-            logger.error(f"初始化数据库跨天状态异常: {e}")
-    else:
-        memory_visitors["current_date"] = today
     await start_news_tasks(app)
     yield
     await stop_news_tasks()
@@ -161,38 +137,20 @@ app.include_router(news_router, prefix="/news")
 @app.get("/")
 async def index(request: Request):
     today = get_beijing_date()
-    nav_ips, nav_meta = db.get_nav_collections()
 
     client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1")
     if client_ip:
         client_ip = client_ip.split(",")[0].strip()
 
-    if nav_ips is not None and nav_meta is not None:
-        try:
-            meta = await nav_meta.find_one({"_id": "meta"})
-            if meta and meta.get("current_date") != today:
-                await nav_ips.delete_many({})
-                await nav_meta.update_one({"_id": "meta"}, {"$set": {"current_date": today}}, upsert=True)
-            res = await nav_ips.update_one(
-                {"_id": client_ip},
-                {"$inc": {"count": 1}, "$setOnInsert": {"location": "查询中..."}},
-                upsert=True
-            )
-            if res.upserted_id is not None:
-                asyncio.create_task(fetch_and_save_ip_location(client_ip))
-            visit_count = await nav_ips.count_documents({})
-        except Exception:
-            visit_count = 0
-    else:
-        if memory_visitors["current_date"] != today:
-            memory_visitors["current_date"] = today
-            memory_visitors["ips"].clear()
-        if client_ip not in memory_visitors["ips"]:
-            memory_visitors["ips"][client_ip] = {"count": 1, "location": "查询中...", "clicks": {}}
-            asyncio.create_task(fetch_and_save_ip_location(client_ip))
-        else:
-            memory_visitors["ips"][client_ip]["count"] += 1
-        visit_count = len(memory_visitors["ips"])
+    try:
+        visit_count, is_new = await db.record_visitor(client_ip, today)
+        if is_new:
+            task = asyncio.create_task(fetch_and_save_ip_location(client_ip, today))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+    except Exception as e:
+        logger.error(f"记录访客异常: {e}")
+        visit_count = 1
 
     accept = request.headers.get("Accept", "")
     if "application/vnd.wap.xhtml+xml" in accept:
@@ -208,54 +166,32 @@ async def index(request: Request):
 
 @app.get("/redirect")
 async def redirect_to(request: Request, url: str, name: Optional[str] = None):
+    today = get_beijing_date()
     client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1")
     if client_ip:
         client_ip = client_ip.split(",")[0].strip()
-        nav_ips, _ = db.get_nav_collections()
-        if nav_ips is not None and name:
+        if name:
             try:
-                await nav_ips.update_one({"_id": client_ip}, {"$inc": {f"clicks.{name}": 1}}, upsert=True)
-            except Exception:
-                pass
-        elif name and client_ip in memory_visitors["ips"]:
-            clicks = memory_visitors["ips"][client_ip].setdefault("clicks", {})
-            clicks[name] = clicks.get(name, 0) + 1
+                await db.record_click(client_ip, today, name)
+            except Exception as e:
+                logger.error(f"记录点击统计异常: {e}")
     return RedirectResponse(url=url, status_code=302)
 
 @app.get("/admin/ips")
 async def view_ips():
     today = get_beijing_date()
-    nav_ips, _ = db.get_nav_collections()
-    if nav_ips is not None:
-        try:
-            cursor = nav_ips.find()
-            db_ips = {}
-            async for doc in cursor:
-                db_ips[doc["_id"]] = {
-                    "location": doc.get("location", "未知"),
-                    "count": doc.get("count", 0),
-                    "clicks": doc.get("clicks", {})
-                }
-            return JSONResponse({
-                "current_date": today,
-                "total_visitors": len(db_ips),
-                "source": "database",
-                "ips": db_ips
-            })
-        except Exception as e:
-            return JSONResponse({
-                "current_date": today,
-                "total_visitors": 0,
-                "source": "error",
-                "error": str(e),
-                "ips": {}
-            })
-    return JSONResponse({
-        "current_date": memory_visitors["current_date"] or today,
-        "total_visitors": len(memory_visitors["ips"]),
-        "source": "memory",
-        "ips": memory_visitors["ips"]
-    })
+    try:
+        stats = await db.get_visitor_stats(today)
+        return JSONResponse(stats)
+    except Exception as e:
+        logger.error(f"查询访客仪表盘异常: {e}")
+        return JSONResponse({
+            "current_date": today,
+            "total_visitors": 0,
+            "source": "error",
+            "error": str(e),
+            "ips": {}
+        })
 
 @app.get("/health")
 async def health():

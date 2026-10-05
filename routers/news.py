@@ -15,8 +15,8 @@ from fastapi.responses import RedirectResponse
 import httpx
 import feedparser
 import trafilatura
+import secrets
 from cachetools import TTLCache
-from pymongo import UpdateOne
 from PIL import Image
 
 from core import db
@@ -36,7 +36,10 @@ feedparser.USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "portal_wap_default_secret_2026").encode("utf-8")
+_env_key = os.environ.get("SECRET_KEY", "").strip()
+if not _env_key:
+    _env_key = secrets.token_hex(32)
+SECRET_KEY = _env_key.encode("utf-8")
 
 def sign_url(url: str) -> str:
     return hmac.new(SECRET_KEY, url.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -126,33 +129,15 @@ def deserialize_item(doc: dict) -> FakeItem:
     return FakeItem(doc_copy)
 
 async def load_all_from_db() -> None:
-    news_col, meta_col = db.get_news_collections()
-    if news_col is None or meta_col is None:
-        return
     try:
-        await news_col.create_index([("cat_id", 1), ("published_parsed", -1)])
-        await news_col.create_index([("cat_id", 1), ("link_hash", 1)])
-        await news_col.create_index([("link", 1)], unique=True)
-
-        img_col = db.get_image_collection()
-        if img_col is not None:
-            await img_col.create_index([("updated_at", -1)])
-
         for cat_id in RSS_FEEDS.keys():
-            docs = (
-                await news_col.find({"cat_id": cat_id})
-                .sort("published_parsed", -1)
-                .limit(300)
-                .to_list(length=300)
-            )
+            docs, last_sync = await db.load_news_by_cat(cat_id, limit=300)
             if docs:
                 news_cache[cat_id]["items"] = [deserialize_item(doc) for doc in docs]
-                meta = await meta_col.find_one({"_id": cat_id})
-                if meta:
-                    news_cache[cat_id]["timestamp"] = meta.get("last_sync", 0)
-        logger.info("成功从 MongoDB 加载新闻缓存数据")
+                news_cache[cat_id]["timestamp"] = last_sync
+        logger.info("成功从 SQLite 加载新闻持久化缓存数据")
     except Exception as e:
-        logger.error(f"恢复新闻缓存失败: {e}")
+        logger.error(f"从 SQLite 恢复新闻缓存失败: {e}")
 
 async def sync_feed(cat_id: str) -> bool:
     if cat_id not in RSS_FEEDS:
@@ -186,33 +171,10 @@ async def sync_feed(cat_id: str) -> bool:
                 added_count += 1
 
         if to_save:
-            ops = [
-                UpdateOne({"link": item["link"]}, {"$set": item}, upsert=True)
-                for item in to_save
-            ]
-            col, meta_col = db.get_news_collections()
-            if col is not None and meta_col is not None:
-                try:
-                    await col.bulk_write(ops, ordered=False)
-                    await meta_col.update_one(
-                        {"_id": cat_id},
-                        {"$set": {"last_sync": current_time}},
-                        upsert=True,
-                    )
-                    last_docs = (
-                        await col.find({"cat_id": cat_id})
-                        .sort("published_parsed", -1)
-                        .skip(300)
-                        .limit(1)
-                        .to_list(length=1)
-                    )
-                    if last_docs:
-                        cutoff_time = last_docs[0]["published_parsed"]
-                        await col.delete_many(
-                            {"cat_id": cat_id, "published_parsed": {"$lt": cutoff_time}}
-                        )
-                except Exception as ex:
-                    logger.error(f"MongoDB 新闻写入失败 ({cat_id}): {ex}")
+            try:
+                await db.save_news_items(cat_id, to_save, current_time)
+            except Exception as ex:
+                logger.error(f"SQLite 新闻写入失败 ({cat_id}): {ex}")
 
         cache["items"] = cache["items"][:300]
         cache["timestamp"] = current_time
@@ -268,6 +230,17 @@ async def fetch_article_content(item_link: str, cat: str) -> Optional[str]:
     full_content = full_content_cache.get(item_link)
     if full_content or not item_link or cat == "tech":
         return full_content
+
+    link_hash = hashlib.md5(item_link.encode("utf-8")).hexdigest()
+    # 优先从 SQLite 持久化中读取已抓取的全文，避免重复爬取与防盗链拦截
+    try:
+        article = await db.get_article(cat, link_hash)
+        if article and article.get("full_content"):
+            full_content = article["full_content"]
+            full_content_cache[item_link] = full_content
+            return full_content
+    except Exception as ex:
+        logger.warning(f"读取 SQLite 全文失败: {ex}")
 
     try:
         client = get_http_client()
@@ -341,15 +314,10 @@ async def fetch_article_content(item_link: str, cat: str) -> Optional[str]:
                 if extracted and len(extracted) > 10:
                     full_content = extracted
                     full_content_cache[item_link] = full_content
-                    col, _ = db.get_news_collections()
-                    if col is not None:
-                        try:
-                            await col.update_one(
-                                {"link": item_link},
-                                {"$set": {"full_content": full_content}},
-                            )
-                        except Exception as ex:
-                            logger.error(f"全文更新失败: {ex}")
+                    try:
+                        await db.save_article_content(link_hash, full_content)
+                    except Exception as ex:
+                        logger.error(f"全文保存至 SQLite 失败: {ex}")
     except Exception as e:
         logger.warning(f"抓取全文失败 ({item_link}): {e}")
 
@@ -361,16 +329,15 @@ async def fetch_and_cache_image(url: str) -> Optional[bytes]:
     if url in image_cache:
         return image_cache[url]
 
-    img_col = db.get_image_collection()
-    if img_col is not None:
-        try:
-            doc = await img_col.find_one({"_id": url})
-            if doc and doc.get("img_data"):
-                img_data = doc["img_data"]
-                image_cache[url] = img_data
-                return img_data
-        except Exception as e:
-            logger.error(f"MongoDB 图片读取失败: {e}")
+    # 优先从 SQLite 缓存中读取压缩处理后的图片
+    try:
+        cached = await db.get_cached_image(url)
+        if cached:
+            img_data, _ = cached
+            image_cache[url] = img_data
+            return img_data
+    except Exception as e:
+        logger.warning(f"SQLite 图片读取失败: {e}")
 
     try:
         client = get_http_client()
@@ -424,32 +391,10 @@ async def fetch_and_cache_image(url: str) -> Optional[bytes]:
                     logger.warning(f"图片压缩失败: {e}")
 
                 image_cache[url] = img_data
-                if img_col is not None:
-                    try:
-                        await img_col.update_one(
-                            {"_id": url},
-                            {
-                                "$set": {
-                                    "img_data": img_data,
-                                    "updated_at": time.time(),
-                                }
-                            },
-                            upsert=True,
-                        )
-                        last_docs = (
-                            await img_col.find({})
-                            .sort("updated_at", -1)
-                            .skip(1000)
-                            .limit(1)
-                            .to_list(length=1)
-                        )
-                        if last_docs:
-                            cutoff_time = last_docs[0]["updated_at"]
-                            await img_col.delete_many(
-                                {"updated_at": {"$lt": cutoff_time}}
-                            )
-                    except Exception as e:
-                        logger.error(f"MongoDB 图片保存失败: {e}")
+                try:
+                    await db.save_cached_image(url, img_data, "image/jpeg")
+                except Exception as e:
+                    logger.error(f"SQLite 图片保存失败: {e}")
                 return img_data
     except Exception as e:
         logger.warning(f"代理图片失败 ({url}): {e}")
@@ -616,22 +561,13 @@ async def get_article(
                 break
 
     if not item and (target_id or url):
-        col, _ = db.get_news_collections()
-        if col is not None:
-            try:
-                if target_id:
-                    doc = await col.find_one({"cat_id": cat, "link_hash": target_id})
-                    if not doc:
-                        doc = await col.find_one({"cat_id": cat, "link": target_id})
-                elif url:
-                    doc = await col.find_one({"cat_id": cat, "link": url})
-                else:
-                    doc = None
-
-                if doc:
-                    item = deserialize_item(doc)
-            except Exception:
-                pass
+        query_key = target_id or url
+        try:
+            doc = await db.get_article(cat, query_key)
+            if doc:
+                item = deserialize_item(doc)
+        except Exception as ex:
+            logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
 
     if not item:
         raise HTTPException(status_code=404, detail="新闻未找到")

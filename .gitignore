@@ -44,3 +44,8 @@ venv.bak/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
