@@ -9,6 +9,8 @@ COPY . .
 
 EXPOSE 7860
 
-ENV TZ=Asia/Shanghai
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860", "--timeout-keep-alive", "15"]

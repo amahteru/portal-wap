@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -9,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.environ.get("DATA_DIR", "")
+DATA_DIR = os.environ.get("DATA_DIR", "").strip()
 if not DATA_DIR:
     if os.path.exists("/data") and os.access("/data", os.W_OK):
         DATA_DIR = "/data"
@@ -18,11 +19,36 @@ if not DATA_DIR:
 
 DB_PATH = os.path.join(DATA_DIR, "portal.db")
 
+
+def get_secret_key() -> bytes:
+    env_key = os.environ.get("SECRET_KEY", "").strip()
+    if env_key:
+        return env_key.encode("utf-8")
+
+    key_file = os.path.join(DATA_DIR, ".secret_key")
+    if os.path.exists(key_file):
+        try:
+            with open(key_file, encoding="utf-8") as f:
+                saved = f.read().strip()
+                if saved:
+                    return saved.encode("utf-8")
+        except Exception as e:
+            logger.warning(f"读取持久化 SECRET_KEY 失败: {e}")
+
+    new_key = secrets.token_hex(32)
+    try:
+        with open(key_file, "w", encoding="utf-8") as f:
+            f.write(new_key)
+        logger.info(f"已生成并持久化本地 SECRET_KEY 至: {key_file}")
+    except Exception as e:
+        logger.warning(f"持久化 SECRET_KEY 失败: {e}")
+    return new_key.encode("utf-8")
+
+
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     try:
         with conn:
@@ -30,8 +56,12 @@ def get_db():
     finally:
         conn.close()
 
+
 def _init_db_sync() -> None:
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
+    with sqlite3.connect(DB_PATH, timeout=20.0) as setup_conn:
+        setup_conn.execute("PRAGMA journal_mode=WAL;")
+        setup_conn.execute("PRAGMA synchronous=NORMAL;")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -81,11 +111,14 @@ def _init_db_sync() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_img_updated ON image_cache(updated_at DESC);")
     logger.info(f"SQLite 数据库初始化就绪: {DB_PATH}")
 
+
 async def init_db() -> None:
     await asyncio.to_thread(_init_db_sync)
 
+
 async def close_db() -> None:
     pass
+
 
 def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
     with get_db() as conn:
@@ -96,26 +129,27 @@ def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
         if is_new:
             cursor.execute(
                 "INSERT INTO visitors (date, ip, count, location, clicks) VALUES (?, ?, 1, '查询中...', '{}')",
-                (today, ip)
+                (today, ip),
             )
         else:
-            cursor.execute(
-                "UPDATE visitors SET count = count + 1 WHERE date = ? AND ip = ?",
-                (today, ip)
-            )
+            cursor.execute("UPDATE visitors SET count = count + 1 WHERE date = ? AND ip = ?", (today, ip))
         cursor.execute("SELECT COUNT(*) FROM visitors WHERE date = ?", (today,))
         total_visitors = cursor.fetchone()[0]
     return total_visitors, is_new
 
+
 async def record_visitor(ip: str, today: str) -> tuple[int, bool]:
     return await asyncio.to_thread(_record_visitor_sync, ip, today)
+
 
 def _update_visitor_location_sync(ip: str, today: str, location: str) -> None:
     with get_db() as conn:
         conn.execute("UPDATE visitors SET location = ? WHERE date = ? AND ip = ?", (location, today, ip))
 
+
 async def update_visitor_location(ip: str, today: str, location: str) -> None:
     await asyncio.to_thread(_update_visitor_location_sync, ip, today, location)
+
 
 def _record_click_sync(ip: str, today: str, name: str) -> None:
     with get_db() as conn:
@@ -130,11 +164,13 @@ def _record_click_sync(ip: str, today: str, name: str) -> None:
             clicks[name] = clicks.get(name, 0) + 1
             conn.execute(
                 "UPDATE visitors SET clicks = ? WHERE date = ? AND ip = ?",
-                (json.dumps(clicks, ensure_ascii=False), today, ip)
+                (json.dumps(clicks, ensure_ascii=False), today, ip),
             )
+
 
 async def record_click(ip: str, today: str, name: str) -> None:
     await asyncio.to_thread(_record_click_sync, ip, today, name)
+
 
 def _get_visitor_stats_sync(today: str) -> dict[str, Any]:
     with get_db() as conn:
@@ -147,27 +183,21 @@ def _get_visitor_stats_sync(today: str) -> dict[str, Any]:
                 clicks = json.loads(r["clicks"])
             except Exception:
                 clicks = {}
-            ips[r["ip"]] = {
-                "count": r["count"],
-                "location": r["location"],
-                "clicks": clicks
-            }
-        return {
-            "current_date": today,
-            "total_visitors": len(ips),
-            "source": "sqlite",
-            "ips": ips
-        }
+            ips[r["ip"]] = {"count": r["count"], "location": r["location"], "clicks": clicks}
+        return {"current_date": today, "total_visitors": len(ips), "source": "sqlite", "ips": ips}
+
 
 async def get_visitor_stats(today: str) -> dict[str, Any]:
     return await asyncio.to_thread(_get_visitor_stats_sync, today)
+
 
 def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
     with get_db() as conn:
         cursor = conn.cursor()
         now = time.time()
         for it in items:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO news_articles (
                     link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -177,16 +207,28 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: f
                     published = excluded.published,
                     published_parsed = excluded.published_parsed,
                     fetch_time = excluded.fetch_time
-            """, (
-                it["link_hash"], cat_id, it["title"], it["link"],
-                it.get("summary", ""), it.get("published", ""),
-                it.get("published_parsed"), it.get("fetch_time", now), now
-            ))
-        cursor.execute("""
+            """,
+                (
+                    it["link_hash"],
+                    cat_id,
+                    it["title"],
+                    it["link"],
+                    it.get("summary", ""),
+                    it.get("published", ""),
+                    it.get("published_parsed"),
+                    it.get("fetch_time", now),
+                    now,
+                ),
+            )
+        cursor.execute(
+            """
             INSERT INTO news_meta (cat_id, last_sync) VALUES (?, ?)
             ON CONFLICT(cat_id) DO UPDATE SET last_sync = excluded.last_sync
-        """, (cat_id, sync_time))
-        cursor.execute("""
+        """,
+            (cat_id, sync_time),
+        )
+        cursor.execute(
+            """
             DELETE FROM news_articles
             WHERE cat_id = ? AND link_hash NOT IN (
                 SELECT link_hash FROM news_articles
@@ -194,51 +236,67 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: f
                 ORDER BY published_parsed DESC, created_at DESC
                 LIMIT 1000
             )
-        """, (cat_id, cat_id))
+        """,
+            (cat_id, cat_id),
+        )
+
 
 async def save_news_items(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
     await asyncio.to_thread(_save_news_items_sync, cat_id, items, sync_time)
 
+
 def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> tuple[list[dict[str, Any]], float]:
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time, full_content
             FROM news_articles
             WHERE cat_id = ?
             ORDER BY published_parsed DESC, created_at DESC
             LIMIT ?
-        """, (cat_id, limit))
+        """,
+            (cat_id, limit),
+        )
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.execute("SELECT last_sync FROM news_meta WHERE cat_id = ?", (cat_id,))
         meta = cursor.fetchone()
         last_sync = meta["last_sync"] if meta else 0.0
     return rows, last_sync
 
+
 async def load_news_by_cat(cat_id: str, limit: int = 300) -> tuple[list[dict[str, Any]], float]:
     return await asyncio.to_thread(_load_news_by_cat_sync, cat_id, limit)
+
 
 def _get_article_sync(cat_id: str, target_id: str) -> dict[str, Any] | None:
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time, full_content
             FROM news_articles
             WHERE cat_id = ? AND (link_hash = ? OR link = ?)
             LIMIT 1
-        """, (cat_id, target_id, target_id))
+        """,
+            (cat_id, target_id, target_id),
+        )
         row = cursor.fetchone()
         return dict(row) if row else None
 
+
 async def get_article(cat_id: str, target_id: str) -> dict[str, Any] | None:
     return await asyncio.to_thread(_get_article_sync, cat_id, target_id)
+
 
 def _save_article_content_sync(link_hash: str, full_content: str) -> None:
     with get_db() as conn:
         conn.execute("UPDATE news_articles SET full_content = ? WHERE link_hash = ?", (full_content, link_hash))
 
+
 async def save_article_content(link_hash: str, full_content: str) -> None:
     await asyncio.to_thread(_save_article_content_sync, link_hash, full_content)
+
 
 def _get_cached_image_sync(url: str) -> tuple[bytes, str] | None:
     with get_db() as conn:
@@ -249,21 +307,27 @@ def _get_cached_image_sync(url: str) -> tuple[bytes, str] | None:
             return row["data"], row["content_type"]
     return None
 
+
 async def get_cached_image(url: str) -> tuple[bytes, str] | None:
     return await asyncio.to_thread(_get_cached_image_sync, url)
 
+
 def _save_cached_image_sync(url: str, data: bytes, content_type: str) -> None:
     with get_db() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO image_cache (url, data, content_type, updated_at) VALUES (?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET data = excluded.data, content_type = excluded.content_type, updated_at = excluded.updated_at
-        """, (url, data, content_type, time.time()))
+        """,
+            (url, data, content_type, time.time()),
+        )
         conn.execute("""
             DELETE FROM image_cache
             WHERE url NOT IN (
                 SELECT url FROM image_cache ORDER BY updated_at DESC LIMIT 1000
             )
         """)
+
 
 async def save_cached_image(url: str, data: bytes, content_type: str) -> None:
     await asyncio.to_thread(_save_cached_image_sync, url, data, content_type)

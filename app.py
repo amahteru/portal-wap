@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from core import db
 from core.http import close_http_client, get_http_client, init_http_client
+from core.ui import render_xhtml
 from routers.news import news_router, start_news_tasks, stop_news_tasks
 from routers.weather import weather_router
 
@@ -22,9 +23,11 @@ SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 
 _background_tasks = set()
 
+
 def get_beijing_date() -> str:
     tz_bj = timezone(timedelta(hours=8))
     return str(datetime.now(tz_bj).date())
+
 
 def get_greeting() -> str:
     tz_bj = timezone(timedelta(hours=8))
@@ -37,6 +40,14 @@ def get_greeting() -> str:
         return "晚上好，欢迎来到本站"
     else:
         return "夜深了，注意保护视力"
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
 
 async def fetch_and_save_ip_location(ip: str, today: str):
     if not ip or ip.startswith(("127.", "192.168.", "10.", "172.")):
@@ -59,36 +70,44 @@ async def fetch_and_save_ip_location(ip: str, today: str):
     except Exception as e:
         logger.error(f"更新 IP 归属地入库异常: {e}")
 
-XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
-    <head>
-        <title>WAP导航页</title>
-        <link rel="apple-touch-icon" href="/speeddial-icon.png?v=3" />
-        <link rel="icon" type="image/png" sizes="128x128" href="/speeddial-icon.png?v=3" />
-        <link rel="shortcut icon" href="/favicon.ico?v=3" type="image/x-icon" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0, user-scalable=yes" />
-        <style type="text/css">
-            body { background-color: whitesmoke; color: black; margin: 0; padding: 0; }
-            a { color: darkblue; text-decoration: none; }
-            a:visited { color: darkblue; }
-            a:hover { text-decoration: underline; }
-            .header { background-color: #3B5998; color: white; padding: 4px 6px; font-weight: bold; }
-            .content { padding: 6px; line-height: 1.5; }
-            .content b { color: black; }
-            hr { border: 0; border-bottom: 1px solid silver; margin: 6px 0; }
-            .announce { background-color: lightyellow; border: 1px dashed goldenrod; padding: 4px; margin: 6px 0; color: darkorange; font-size: small; }
-            .nav { background-color: gainsboro; padding: 6px; border-top: 1px solid silver; text-align: center; }
-            .item { padding: 1px 1px; display: block; }
-            .odd { background-color: lightgray; }
-            .even { background-color: white; }
-        </style>
-    </head>
-    <body>
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.init_db()
+    await init_http_client()
+    await start_news_tasks()
+    yield
+    await stop_news_tasks()
+    await close_http_client()
+
+
+app = FastAPI(title="Portal WAP", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=500)
+app.include_router(weather_router, prefix="/weather")
+app.include_router(news_router, prefix="/news")
+
+
+@app.get("/")
+async def index(request: Request):
+    today = get_beijing_date()
+    client_ip = get_client_ip(request)
+
+    try:
+        visit_count, is_new = await db.record_visitor(client_ip, today)
+        if is_new:
+            task = asyncio.create_task(fetch_and_save_ip_location(client_ip, today))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+    except Exception as e:
+        logger.error(f"记录访客异常: {e}")
+        visit_count = 1
+
+    greeting = get_greeting()
+    body = f"""
         <div class="header">WAP导航页</div>
         <div class="content">
-            <i>__GREETING__</i><br/>
-            <small style="color: dimgray;">今日访客: __VISIT_COUNT__</small>
+            <i>{greeting}</i><br/>
+            <small style="color: dimgray;">今日访客: {visit_count}</small>
 
             <div style="margin: 8px 0; text-align: center; background-color: gainsboro; padding: 3px; border: 1px solid silver;">
                 <form action="//wap.baidu.com/s" method="get" style="margin: 0; padding: 0;">
@@ -114,67 +133,21 @@ XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
             <small>浙ICP备08012345号-1</small><br/>
             <small>&copy; 2026 Ekiz WAP</small>
         </div>
-    </body>
-</html>
-"""
+    """
+    return render_xhtml(request, "WAP导航页", body)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await db.init_db()
-    await init_http_client()
-    await start_news_tasks(app)
-    yield
-    await stop_news_tasks()
-    await close_http_client()
-    await db.close_db()
-
-app = FastAPI(title="Portal WAP", lifespan=lifespan)
-app.add_middleware(GZipMiddleware, minimum_size=500)
-app.include_router(weather_router, prefix="/weather")
-app.include_router(news_router, prefix="/news")
-
-@app.get("/")
-async def index(request: Request):
-    today = get_beijing_date()
-
-    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1")
-    if client_ip:
-        client_ip = client_ip.split(",")[0].strip()
-
-    try:
-        visit_count, is_new = await db.record_visitor(client_ip, today)
-        if is_new:
-            task = asyncio.create_task(fetch_and_save_ip_location(client_ip, today))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
-    except Exception as e:
-        logger.error(f"记录访客异常: {e}")
-        visit_count = 1
-
-    accept = request.headers.get("Accept", "")
-    if "application/vnd.wap.xhtml+xml" in accept:
-        media_type = "application/vnd.wap.xhtml+xml"
-    elif "application/xhtml+xml" in accept:
-        media_type = "application/xhtml+xml"
-    else:
-        media_type = "text/html"
-
-    content = XHTML_TEMPLATE.replace("__VISIT_COUNT__", str(visit_count))
-    content = content.replace("__GREETING__", get_greeting())
-    return Response(content=content, media_type=f"{media_type}; charset=utf-8")
 
 @app.get("/redirect")
 async def redirect_to(request: Request, url: str, name: str | None = None):
     today = get_beijing_date()
-    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1")
-    if client_ip:
-        client_ip = client_ip.split(",")[0].strip()
-        if name:
-            try:
-                await db.record_click(client_ip, today, name)
-            except Exception as e:
-                logger.error(f"记录点击统计异常: {e}")
+    client_ip = get_client_ip(request)
+    if name:
+        try:
+            await db.record_click(client_ip, today, name)
+        except Exception as e:
+            logger.error(f"记录点击统计异常: {e}")
     return RedirectResponse(url=url, status_code=302)
+
 
 @app.get("/admin/ips")
 async def view_ips():
@@ -184,30 +157,23 @@ async def view_ips():
         return JSONResponse(stats)
     except Exception as e:
         logger.error(f"查询访客仪表盘异常: {e}")
-        return JSONResponse({
-            "current_date": today,
-            "total_visitors": 0,
-            "source": "error",
-            "error": str(e),
-            "ips": {}
-        })
+        return JSONResponse({"current_date": today, "total_visitors": 0, "source": "error", "error": str(e), "ips": {}})
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-@app.get("/favicon.ico")
+
+@app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     if os.path.exists(FAVICON_PATH):
         return FileResponse(FAVICON_PATH, media_type="image/x-icon")
-    if os.path.exists("favicon.ico"):
-        return FileResponse("favicon.ico", media_type="image/x-icon")
     return Response(status_code=404)
 
-@app.get("/speeddial-icon.png")
+
+@app.get("/speeddial-icon.png", include_in_schema=False)
 async def speeddial_icon():
     if os.path.exists(SPEEDDIAL_PATH):
         return FileResponse(SPEEDDIAL_PATH, media_type="image/png")
-    if os.path.exists("speeddial-icon.png"):
-        return FileResponse("speeddial-icon.png", media_type="image/png")
     return Response(status_code=404)

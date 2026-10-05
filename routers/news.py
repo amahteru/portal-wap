@@ -4,9 +4,7 @@ import hmac
 import html
 import io
 import logging
-import os
 import re
-import secrets
 import time
 import urllib.parse
 from typing import Any
@@ -19,35 +17,36 @@ from fastapi.responses import RedirectResponse
 from PIL import Image
 
 from core import db
+from core.db import get_secret_key
 from core.http import get_http_client
+from core.ui import render_xhtml
 
 logger = logging.getLogger(__name__)
 
 news_router = APIRouter()
 
 full_content_cache = TTLCache(maxsize=200, ttl=86400)
-image_cache = TTLCache(maxsize=500, ttl=86400 * 7)
+image_cache = TTLCache(maxsize=50, ttl=86400)
 
 prefetch_queue: asyncio.Queue = asyncio.Queue()
 
 feedparser.USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-_env_key = os.environ.get("SECRET_KEY", "").strip()
-if not _env_key:
-    _env_key = secrets.token_hex(32)
-SECRET_KEY = _env_key.encode("utf-8")
+SECRET_KEY = get_secret_key()
+
 
 def sign_url(url: str) -> str:
     return hmac.new(SECRET_KEY, url.encode("utf-8"), hashlib.sha256).hexdigest()
+
 
 def verify_url(url: str, sign: str) -> bool:
     if not url or not sign:
         return False
     expected_sign = sign_url(url)
     return hmac.compare_digest(expected_sign, sign)
+
 
 RSS_FEEDS = {
     "importnews": {
@@ -73,15 +72,6 @@ RSS_FEEDS = {
 CACHE_TTL = 600
 news_cache = {cat_id: {"timestamp": 0, "items": []} for cat_id in RSS_FEEDS}
 
-class FakeItem:
-    def __init__(self, data: dict):
-        self.__dict__.update(data)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        return getattr(self, key)
 
 def serialize_item(item: Any, cat_id: str) -> dict:
     pub_parsed = None
@@ -118,14 +108,16 @@ def serialize_item(item: Any, cat_id: str) -> dict:
         "fetch_time": time.time(),
     }
 
-def deserialize_item(doc: dict) -> FakeItem:
+
+def deserialize_item(doc: dict) -> dict:
     doc_copy = dict(doc)
-    if doc_copy.get("published_parsed"):
+    if doc_copy.get("published_parsed") and isinstance(doc_copy["published_parsed"], (int, float)):
         try:
             doc_copy["published_parsed"] = time.localtime(doc_copy["published_parsed"])
         except Exception:
             pass
-    return FakeItem(doc_copy)
+    return doc_copy
+
 
 async def load_all_from_db() -> None:
     try:
@@ -138,6 +130,7 @@ async def load_all_from_db() -> None:
     except Exception as e:
         logger.error(f"从 SQLite 恢复新闻缓存失败: {e}")
 
+
 async def sync_feed(cat_id: str) -> bool:
     if cat_id not in RSS_FEEDS:
         return False
@@ -146,6 +139,7 @@ async def sync_feed(cat_id: str) -> bool:
     current_time = time.time()
 
     try:
+
         def _parse():
             return feedparser.parse(RSS_FEEDS[cat_id]["url"])
 
@@ -154,18 +148,17 @@ async def sync_feed(cat_id: str) -> bool:
         if not new_entries:
             return False
 
-        existing_links = {
-            (it.get("link", "") if hasattr(it, "get") else getattr(it, "link", ""))
-            for it in cache["items"]
-        }
+        existing_links = {it.get("link", "") for it in cache["items"]}
         to_save = []
         added_count = 0
 
         for item in new_entries:
-            link = getattr(item, "link", "") if hasattr(item, "link") else item.get("link", "")
+            s_item = serialize_item(item, cat_id)
+            link = s_item.get("link", "")
             if link and link not in existing_links:
-                cache["items"].insert(added_count, item)
-                to_save.append(serialize_item(item, cat_id))
+                parsed_item = deserialize_item(s_item)
+                cache["items"].insert(added_count, parsed_item)
+                to_save.append(s_item)
                 prefetch_queue.put_nowait((link, cat_id))
                 added_count += 1
 
@@ -182,6 +175,7 @@ async def sync_feed(cat_id: str) -> bool:
         logger.error(f"同步新闻失败 ({cat_id}): {e}")
         return False
 
+
 async def background_refresher() -> None:
     try:
         await asyncio.sleep(5)
@@ -194,6 +188,7 @@ async def background_refresher() -> None:
         pass
     except Exception as e:
         logger.error(f"新闻后台刷新任务异常: {e}")
+
 
 async def prefetch_worker() -> None:
     try:
@@ -217,6 +212,7 @@ async def prefetch_worker() -> None:
     except Exception as e:
         logger.error(f"新闻预抓取队列任务异常: {e}")
 
+
 async def get_news_items(cat_id: str) -> list:
     if cat_id not in RSS_FEEDS:
         cat_id = "importnews"
@@ -224,6 +220,7 @@ async def get_news_items(cat_id: str) -> list:
     if not cache["items"]:
         await sync_feed(cat_id)
     return cache["items"]
+
 
 async def fetch_article_content(item_link: str, cat: str) -> str | None:
     cached = full_content_cache.get(item_link)
@@ -297,20 +294,12 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
                             text,
                             flags=re.DOTALL | re.IGNORECASE,
                         )
-                        text = re.sub(
-                            r'<(?:[^>"\']|"[^"]*"|\'[^\']*\')*>', " ", text
-                        )
-                        lines = [
-                            line.strip()
-                            for line in text.split("\n")
-                            if line.strip()
-                        ]
+                        text = re.sub(r'<(?:[^>"\']|"[^"]*"|\'[^\']*\')*>', " ", text)
+                        lines = [line.strip() for line in text.split("\n") if line.strip()]
                         extracted = "\n".join(lines)
 
                 if not extracted:
-                    extracted = await asyncio.to_thread(
-                        trafilatura.extract, downloaded, favor_precision=True
-                    )
+                    extracted = await asyncio.to_thread(trafilatura.extract, downloaded, favor_precision=True)
 
                 if extracted and len(extracted) > 10:
                     full_content = extracted
@@ -323,6 +312,7 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
         logger.warning(f"抓取全文失败 ({item_link}): {e}")
 
     return full_content if isinstance(full_content, str) else None
+
 
 async def fetch_and_cache_image(url: str) -> bytes | None:
     if not url or not url.startswith(("http://", "https://")):
@@ -343,9 +333,7 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
 
     try:
         client = get_http_client()
-        async with client.stream(
-            "GET", url, headers={"User-Agent": feedparser.USER_AGENT}, timeout=10.0
-        ) as resp:
+        async with client.stream("GET", url, headers={"User-Agent": feedparser.USER_AGENT}, timeout=10.0) as resp:
             if resp.status_code == 200:
                 chunks = []
                 downloaded_size = 0
@@ -357,6 +345,7 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                 img_data = b"".join(chunks)
 
                 try:
+
                     def process_image():
                         Image.MAX_IMAGE_PIXELS = 10000000
                         img = Image.open(io.BytesIO(img_data))
@@ -376,9 +365,7 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                         if img.width > max_width:
                             ratio = max_width / img.width
                             resample_mode = getattr(
-                                getattr(Image, "Resampling", Image),
-                                "LANCZOS",
-                                getattr(Image, "ANTIALIAS", 1)
+                                getattr(Image, "Resampling", Image), "LANCZOS", getattr(Image, "ANTIALIAS", 1)
                             )
                             img = img.resize(
                                 (max_width, int(img.height * ratio)),
@@ -402,67 +389,28 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
         logger.warning(f"代理图片失败 ({url}): {e}")
     return None
 
-def generate_xhtml_response(request: Request, title: str, body_content: str, status_code: int = 200) -> Response:
-    accept = request.headers.get("Accept", "")
-    if "application/vnd.wap.xhtml+xml" in accept:
-        media_type = "application/vnd.wap.xhtml+xml"
-    elif "application/xhtml+xml" in accept:
-        media_type = "application/xhtml+xml"
-    else:
-        media_type = "text/html"
 
-    xhtml_str = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
-<head>
-    <title>{html.escape(title)}</title>
-    <link rel="apple-touch-icon" href="/speeddial-icon.png?v=3" />
-    <link rel="icon" type="image/png" sizes="128x128" href="/speeddial-icon.png?v=3" />
-    <link rel="shortcut icon" href="/favicon.ico?v=3" type="image/x-icon" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0, user-scalable=yes" />
-    <style type="text/css">
-        body {{ background-color: whitesmoke; color: black; margin: 0; padding: 0; }}
-        a {{ color: darkblue; text-decoration: none; }}
-        a:visited {{ color: purple; }}
-        a:hover {{ text-decoration: underline; }}
-        .header {{ background-color: #3B5998; color: white; padding: 4px 6px; font-weight: bold; }}
-        .content {{ padding: 6px; line-height: 1.6; text-align: justify; word-wrap: break-word; }}
-        .content b {{ color: black; }}
-        hr {{ border: 0; border-bottom: 1px solid silver; margin: 6px 0; }}
-        select, input {{ border: 1px solid silver; background-color: white; margin-top: 4px; }}
-        input[type="submit"] {{ background-color: gainsboro; padding: 2px 6px; }}
-        .nav {{ background-color: gainsboro; padding: 6px; border-top: 1px solid silver; text-align: center; }}
-        .item {{ padding: 1px 1px; display: block; }}
-        .odd {{ background-color: lightgray; }}
-        .even {{ background-color: white; }}
-    </style>
-</head>
-<body>
-    {body_content}
-</body>
-</html>"""
-    headers = {
-        "Cache-Control": "public, max-age=300",
-        "Connection": "keep-alive",
-        "Keep-Alive": "timeout=15, max=100",
-    }
-    return Response(
-        content=xhtml_str,
-        media_type=f"{media_type}; charset=utf-8",
-        headers=headers,
+def generate_xhtml_response(request: Request, title: str, body_content: str, status_code: int = 200) -> Response:
+    return render_xhtml(
+        request,
+        title,
+        body_content,
+        extra_css="a:visited { color: purple; }",
         status_code=status_code,
+        headers={"Cache-Control": "public, max-age=300"},
     )
+
 
 @news_router.get("", include_in_schema=False)
 @news_router.get("/")
 async def news_root():
     return RedirectResponse(url="/news/category/importnews", status_code=302)
 
+
 @news_router.get("/category/{cat_id}")
-async def get_category(request: Request, cat_id: str, page: int = 1, d: str | None = None):
+async def get_category(request: Request, cat_id: str, page: int = 1):
     if cat_id not in RSS_FEEDS:
         cat_id = "importnews"
-    today_date = time.strftime("%Y%m%d")
     cat_name = RSS_FEEDS[cat_id]["name"]
 
     nav_links = []
@@ -470,13 +418,11 @@ async def get_category(request: Request, cat_id: str, page: int = 1, d: str | No
         if cat_key == cat_id:
             nav_links.append(f"<b>{cat_info['name']}</b>")
         else:
-            nav_links.append(
-                f'<a href="/news/category/{cat_key}?d={today_date}">{cat_info["name"]}</a>'
-            )
+            nav_links.append(f'<a href="/news/category/{cat_key}">{cat_info["name"]}</a>')
 
     nav_html = ""
     for i in range(0, len(nav_links), 4):
-        nav_html += f'{" | ".join(nav_links[i : i + 4])}<br/>\n'
+        nav_html += f"{' | '.join(nav_links[i : i + 4])}<br/>\n"
 
     items = await get_news_items(cat_id)
     PAGE_SIZE = 20
@@ -490,26 +436,20 @@ async def get_category(request: Request, cat_id: str, page: int = 1, d: str | No
     else:
         for i, item in enumerate(page_items):
             real_index = start_idx + i
-            link = getattr(item, "link", "") if hasattr(item, "link") else item.get("link", "")
-            title = getattr(item, "title", "无标题") if hasattr(item, "title") else item.get("title", "无标题")
+            link = item.get("link", "")
+            title = item.get("title", "无标题")
             safe_title = html.escape(title)
-            item_hash = (
-                hashlib.md5(link.encode("utf-8")).hexdigest()
-                if link
-                else str(real_index)
+            item_hash = item.get("link_hash") or (
+                hashlib.md5(link.encode("utf-8")).hexdigest() if link else str(real_index)
             )
             css_class = "odd" if i % 2 == 0 else "even"
-            list_html += f'<div class="item {css_class}">[{real_index+1}]<a href="/news/article?cat={cat_id}&amp;id={item_hash}&amp;d={today_date}">{safe_title}</a></div>\n'
+            list_html += f'<div class="item {css_class}">[{real_index + 1}]<a href="/news/article?cat={cat_id}&amp;id={item_hash}">{safe_title}</a></div>\n'
 
     page_nav_html = ""
     if page > 1:
-        page_nav_html += (
-            f'<a href="/news/category/{cat_id}?page={page-1}&amp;d={today_date}">[上一页]</a> '
-        )
+        page_nav_html += f'<a href="/news/category/{cat_id}?page={page - 1}">[上一页]</a> '
     if end_idx < len(items):
-        page_nav_html += (
-            f'<a href="/news/category/{cat_id}?page={page+1}&amp;d={today_date}">[下一页]</a>'
-        )
+        page_nav_html += f'<a href="/news/category/{cat_id}?page={page + 1}">[下一页]</a>'
     if page_nav_html:
         page_nav_html += f"<br/>(第{page}页)"
 
@@ -529,6 +469,7 @@ async def get_category(request: Request, cat_id: str, page: int = 1, d: str | No
     """
     return generate_xhtml_response(request, f"WAP新闻 - {cat_name}", body_content)
 
+
 @news_router.get("/article")
 @news_router.get("/article/{cat}/{item_id}")
 async def get_article(
@@ -546,8 +487,10 @@ async def get_article(
     item = None
     if target_id:
         for it in items:
-            link = getattr(it, "link", "") if hasattr(it, "link") else it.get("link", "")
-            if link and hashlib.md5(link.encode("utf-8")).hexdigest() == target_id:
+            link = it.get("link", "")
+            if it.get("link_hash") == target_id or (
+                link and hashlib.md5(link.encode("utf-8")).hexdigest() == target_id
+            ):
                 item = it
                 break
         if not item and target_id.isdigit():
@@ -557,8 +500,7 @@ async def get_article(
 
     if not item and url:
         for it in items:
-            link = getattr(it, "link", "") if hasattr(it, "link") else it.get("link", "")
-            if link == url:
+            if it.get("link") == url:
                 item = it
                 break
 
@@ -575,19 +517,12 @@ async def get_article(
     if not item:
         raise HTTPException(status_code=404, detail="新闻未找到")
 
-    item_link = getattr(item, "link", "") if hasattr(item, "link") else item.get("link", "")
-    title = getattr(item, "title", "无标题") if hasattr(item, "title") else item.get("title", "无标题")
+    item_link = item.get("link", "")
+    title = item.get("title", "无标题")
     safe_title = html.escape(title)
 
-    full_content = await fetch_article_content(item_link, cat)
-    if not full_content:
-        full_content = getattr(item, "full_content", None) or (
-            item.get("full_content") if hasattr(item, "get") else None
-        )
-
-    summary = getattr(item, "summary", "") if hasattr(item, "summary") else item.get("summary", "")
-    if not summary:
-        summary = getattr(item, "description", "暂无详细内容") if hasattr(item, "description") else item.get("description", "暂无详细内容")
+    full_content = await fetch_article_content(item_link, cat) or item.get("full_content")
+    summary = item.get("summary") or item.get("description", "暂无详细内容")
 
     display_content = full_content if full_content else summary
     if not isinstance(display_content, str):
@@ -611,11 +546,7 @@ async def get_article(
                 simple_line = re.sub(r"[^\w]", "", line_strip)
                 if simple_line == simple_title:
                     continue
-            if (
-                re.match(r"^[\-\d\s\:\u4e00-\u9fa5]+$", line_strip)
-                and "年" in line_strip
-                and "月" in line_strip
-            ):
+            if re.match(r"^[\-\d\s\:\u4e00-\u9fa5]+$", line_strip) and "年" in line_strip and "月" in line_strip:
                 continue
             cleaned_lines.append("　　" + html.escape(line_strip))
 
@@ -632,16 +563,11 @@ async def get_article(
 
         safe_desc = re.sub(r"　　\[IMAGE:(.*?)\]", img_replacer, safe_desc)
     else:
-        clean_desc = (
-            html.unescape(re.sub(r"<.*?>", "", display_content))
-            .strip()
-            .replace("\xa0", " ")
-        )
+        clean_desc = html.unescape(re.sub(r"<.*?>", "", display_content)).strip().replace("\xa0", " ")
         safe_desc = "　　" + html.escape(clean_desc)
 
-    today_date = time.strftime("%Y%m%d")
-    pub_parsed = getattr(item, "published_parsed", None) if hasattr(item, "published_parsed") else item.get("published_parsed")
-    pub_str = getattr(item, "published", "暂无时间信息") if hasattr(item, "published") else item.get("published", "暂无时间信息")
+    pub_parsed = item.get("published_parsed")
+    pub_str = item.get("published", "暂无时间信息")
     if pub_parsed:
         try:
             pub_date = time.strftime("%Y-%m-%d %H:%M", pub_parsed)
@@ -661,19 +587,18 @@ async def get_article(
         {safe_desc}<br/>
     </div>
     <div class="nav">
-        <a href="/news/category/{cat}?d={today_date}">[返回{cat_name}频道]</a><br/>
+        <a href="/news/category/{cat}">[返回{cat_name}频道]</a><br/>
         <a href="/">[返回门户首页]</a>
     </div>
     """
     return generate_xhtml_response(request, safe_title, body_content)
 
+
 @news_router.get("/image-proxy")
 @news_router.get("/proxy-image")
 async def image_proxy(url: str, sign: str = ""):
     if not sign or not verify_url(url, sign):
-        raise HTTPException(
-            status_code=403, detail="Invalid signature or unauthorized URL"
-        )
+        raise HTTPException(status_code=403, detail="Invalid signature or unauthorized URL")
 
     img_data = await fetch_and_cache_image(url)
     if img_data:
@@ -684,7 +609,9 @@ async def image_proxy(url: str, sign: str = ""):
         )
     return Response(status_code=404)
 
+
 _background_tasks: list[asyncio.Task] = []
+
 
 async def start_news_tasks(app: Any | None = None) -> list[asyncio.Task]:
     await load_all_from_db()
@@ -692,6 +619,7 @@ async def start_news_tasks(app: Any | None = None) -> list[asyncio.Task]:
     t2 = asyncio.create_task(prefetch_worker())
     _background_tasks.extend([t1, t2])
     return [t1, t2]
+
 
 async def stop_news_tasks() -> None:
     for task in _background_tasks:
