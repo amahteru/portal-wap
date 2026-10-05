@@ -1,9 +1,9 @@
 # WAP 综合门户 (Portal) 重构合并架构设计规范
 
 - **创建日期**：2026-10-05
-- **项目名称**：`portal` (WAP 综合门户)
-- **目标路径**：`d:\Users\Tzucet\Desktop\网站\我的WAP网站\portal`
-- **GitHub 仓库**：`https://github.com/amahteru/portal.git`
+- **项目名称**：`portal-wap` (WAP 综合门户)
+- **目标路径**：`d:\Users\Tzucet\Desktop\网站\我的WAP网站\portal-wap`
+- **GitHub 仓库**：`https://github.com/amahteru/portal-wap.git`
 
 ---
 
@@ -18,7 +18,7 @@
 每个站点独立占用一个容器实例，维护分散且各占配额。
 
 ### 1.2 目标
-* **业务合并**：将导航、天气、新闻三合一，打造“WAP 综合门户”（Portal）；
+* **业务合并**：将导航、天气、新闻三合一，打造“WAP 综合门户”（Portal-WAP）；
 * **统一技术栈**：采用全异步高性能 **FastAPI (Python 3.11)** 架构，统一后台任务调度与 I/O 驱动；
 * **保留原貌**：**门户首页（`/`）保持经典的 XHTML Mobile 1.0 排版与设计完全不变**，站内链接平滑替换；
 * **单容器部署**：单一 Docker 镜像（Python 3.11-slim），标准暴露 7860 端口；
@@ -54,7 +54,7 @@ graph TD
 ## 3. 代码目录结构规范 (Directory Structure)
 
 ```text
-portal/
+portal-wap/
 ├── core/
 │   ├── __init__.py
 │   └── db.py                  # MongoDB 异步连接池管理、集合获取与降级保护
