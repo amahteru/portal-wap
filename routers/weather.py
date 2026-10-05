@@ -1,4 +1,5 @@
 import os
+import logging
 import urllib.parse
 import asyncio
 from datetime import datetime
@@ -9,6 +10,10 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 import httpx
 from cachetools import TTLCache
+
+from core.http import get_http_client
+
+logger = logging.getLogger(__name__)
 
 weather_router = APIRouter()
 
@@ -211,14 +216,14 @@ async def fetch_weather_data(city: str) -> Optional[dict]:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                weather_cache[cache_key] = data
-                return data
-    except Exception:
-        pass
+        client = get_http_client()
+        resp = await client.get(url, headers=headers, timeout=8.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            weather_cache[cache_key] = data
+            return data
+    except Exception as e:
+        logger.warning(f"获取城市天气失败 ({city}): {e}")
     return None
 
 async def fetch_aqi_data(city: str) -> Optional[dict]:
@@ -232,17 +237,17 @@ async def fetch_aqi_data(city: str) -> Optional[dict]:
 
     url = f"https://api.waqi.info/feed/{urllib.parse.quote(cache_key)}/?token={token}"
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status") == "ok":
-                    aqi_info = data.get("data")
-                    if aqi_info:
-                        aqi_cache[cache_key] = aqi_info
-                        return aqi_info
-    except Exception:
-        pass
+        client = get_http_client()
+        resp = await client.get(url, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") == "ok":
+                aqi_info = data.get("data")
+                if aqi_info:
+                    aqi_cache[cache_key] = aqi_info
+                    return aqi_info
+    except Exception as e:
+        logger.warning(f"获取城市AQI失败 ({city}): {e}")
     return None
 
 def generate_xhtml_response(request: Request, title: str, body_content: str, status_code: int = 200) -> Response:

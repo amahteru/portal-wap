@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
@@ -11,8 +12,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 import httpx
 
 from core import db
+from core.http import init_http_client, close_http_client, get_http_client
 from routers.weather import weather_router
 from routers.news import news_router, start_news_tasks, stop_news_tasks
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
@@ -47,13 +51,14 @@ async def fetch_and_save_ip_location(ip: str):
     else:
         location = "未知归属地"
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                resp = await client.get(f"http://ip-api.com/json/{ip}?lang=zh-CN")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("status") == "success":
-                        location = f"{data.get('country', '')} {data.get('regionName', '')} {data.get('city', '')}".strip()
-        except Exception:
+            client = get_http_client()
+            resp = await client.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=4.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "success":
+                    location = f"{data.get('country', '')} {data.get('regionName', '')} {data.get('city', '')}".strip()
+        except Exception as e:
+            logger.warning(f"获取 IP 归属地失败 ({ip}): {e}")
             location = "查询超时或失败"
 
     if nav_ips is not None:
@@ -126,6 +131,7 @@ XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db()
+    await init_http_client()
     today = get_beijing_date()
     nav_ips, nav_meta = db.get_nav_collections()
     if nav_meta is not None:
@@ -138,12 +144,13 @@ async def lifespan(app: FastAPI):
             elif not meta:
                 await nav_meta.insert_one({"_id": "meta", "current_date": today})
         except Exception as e:
-            print(f"初始化数据库跨天状态异常: {e}")
+            logger.error(f"初始化数据库跨天状态异常: {e}")
     else:
         memory_visitors["current_date"] = today
     await start_news_tasks(app)
     yield
     await stop_news_tasks()
+    await close_http_client()
     await db.close_db()
 
 app = FastAPI(title="Portal WAP", lifespan=lifespan)

@@ -1,5 +1,8 @@
 import os
+import logging
 from typing import Optional, Tuple, Any
+
+logger = logging.getLogger(__name__)
 
 _mongo_client: Optional[Any] = None
 _space_id_safe: str = "default_space"
@@ -16,13 +19,13 @@ async def init_db() -> None:
         try:
             from motor.motor_asyncio import AsyncIOMotorClient
             _mongo_client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5000)
-            print(f"MongoDB 异步客户端连接成功，隔离集合后缀: {_space_id_safe}")
+            logger.info(f"MongoDB 异步客户端连接成功，隔离集合后缀: {_space_id_safe}")
         except Exception as e:
-            print(f"MongoDB 连接初始化失败: {e}，将使用内存降级模式")
+            logger.error(f"MongoDB 连接初始化失败: {e}，将使用内存降级模式")
             _mongo_client = None
     else:
         _mongo_client = None
-        print("未检测到 MONGO_URI 环境变量，以纯内存模式运行")
+        logger.info("未检测到 MONGO_URI 环境变量，以纯内存模式运行")
 
 async def close_db() -> None:
     global _mongo_client

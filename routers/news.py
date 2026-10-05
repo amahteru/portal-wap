@@ -6,6 +6,7 @@ import time
 import hmac
 import hashlib
 import asyncio
+import logging
 import urllib.parse
 from typing import Optional, List, Any
 
@@ -19,6 +20,9 @@ from pymongo import UpdateOne
 from PIL import Image
 
 from core import db
+from core.http import get_http_client
+
+logger = logging.getLogger(__name__)
 
 news_router = APIRouter()
 
@@ -146,9 +150,9 @@ async def load_all_from_db() -> None:
                 meta = await meta_col.find_one({"_id": cat_id})
                 if meta:
                     news_cache[cat_id]["timestamp"] = meta.get("last_sync", 0)
-        print("成功从 MongoDB 加载新闻缓存数据")
+        logger.info("成功从 MongoDB 加载新闻缓存数据")
     except Exception as e:
-        print(f"恢复新闻缓存失败: {e}")
+        logger.error(f"恢复新闻缓存失败: {e}")
 
 async def sync_feed(cat_id: str) -> bool:
     if cat_id not in RSS_FEEDS:
@@ -208,13 +212,13 @@ async def sync_feed(cat_id: str) -> bool:
                             {"cat_id": cat_id, "published_parsed": {"$lt": cutoff_time}}
                         )
                 except Exception as ex:
-                    print(f"MongoDB 新闻写入失败 ({cat_id}): {ex}")
+                    logger.error(f"MongoDB 新闻写入失败 ({cat_id}): {ex}")
 
         cache["items"] = cache["items"][:300]
         cache["timestamp"] = current_time
         return True
     except Exception as e:
-        print(f"同步新闻失败 ({cat_id}): {e}")
+        logger.error(f"同步新闻失败 ({cat_id}): {e}")
         return False
 
 async def background_refresher() -> None:
@@ -228,7 +232,7 @@ async def background_refresher() -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        print(f"新闻后台刷新任务异常: {e}")
+        logger.error(f"新闻后台刷新任务异常: {e}")
 
 async def prefetch_worker() -> None:
     try:
@@ -243,14 +247,14 @@ async def prefetch_worker() -> None:
                         await fetch_and_cache_image(img_url)
                         await asyncio.sleep(1)
             except Exception as e:
-                print(f"预抓取文章出错 ({item_link}): {e}")
+                logger.warning(f"预抓取文章出错 ({item_link}): {e}")
             finally:
                 prefetch_queue.task_done()
             await asyncio.sleep(2)
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        print(f"新闻预抓取队列任务异常: {e}")
+        logger.error(f"新闻预抓取队列任务异常: {e}")
 
 async def get_news_items(cat_id: str) -> list:
     if cat_id not in RSS_FEEDS:
@@ -266,88 +270,88 @@ async def fetch_article_content(item_link: str, cat: str) -> Optional[str]:
         return full_content
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            headers = {"User-Agent": feedparser.USER_AGENT}
-            async with client.stream("GET", item_link, headers=headers) as resp:
-                if resp.status_code == 200:
-                    chunks = []
-                    size = 0
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        size += len(chunk)
-                        if size > 2 * 1024 * 1024:
-                            break
-                    downloaded = b"".join(chunks).decode("utf-8", errors="ignore")
-                    extracted = None
+        client = get_http_client()
+        headers = {"User-Agent": feedparser.USER_AGENT}
+        async with client.stream("GET", item_link, headers=headers, timeout=8.0) as resp:
+            if resp.status_code == 200:
+                chunks = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > 2 * 1024 * 1024:
+                        break
+                downloaded = b"".join(chunks).decode("utf-8", errors="ignore")
+                extracted = None
 
-                    if "chinanews.com" in item_link:
+                if "chinanews.com" in item_link:
+                    match = re.search(
+                        r'<div class="left_zw">(.*?)<!--正文end-->',
+                        downloaded,
+                        re.DOTALL,
+                    )
+                    if not match:
                         match = re.search(
-                            r'<div class="left_zw">(.*?)<!--正文end-->',
+                            r'<div class="left_zw">(.*?)<div class="clear"></div>',
                             downloaded,
                             re.DOTALL,
                         )
-                        if not match:
-                            match = re.search(
-                                r'<div class="left_zw">(.*?)<div class="clear"></div>',
-                                downloaded,
-                                re.DOTALL,
-                            )
-                        if match:
-                            raw_content = match.group(1)
+                    if match:
+                        raw_content = match.group(1)
 
-                            def repl_img(m):
-                                src = m.group(1).strip()
-                                abs_src = urllib.parse.urljoin(item_link, src)
-                                return f"\n[IMAGE:{abs_src}]\n"
+                        def repl_img(m):
+                            src = m.group(1).strip()
+                            abs_src = urllib.parse.urljoin(item_link, src)
+                            return f"\n[IMAGE:{abs_src}]\n"
 
-                            text = re.sub(
-                                r'<img\b(?:[^>"\']|"[^"]*"|\'[^\']*\')*?src="([^"]+)"(?:[^>"\']|"[^"]*"|\'[^\']*\')*>',
-                                repl_img,
-                                raw_content,
-                                flags=re.IGNORECASE,
-                            )
-                            text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-                            text = re.sub(
-                                r"<script.*?>.*?</script>",
-                                "",
-                                text,
-                                flags=re.DOTALL | re.IGNORECASE,
-                            )
-                            text = re.sub(
-                                r"<style.*?>.*?</style>",
-                                "",
-                                text,
-                                flags=re.DOTALL | re.IGNORECASE,
-                            )
-                            text = re.sub(
-                                r'<(?:[^>"\']|"[^"]*"|\'[^\']*\')*>', " ", text
-                            )
-                            lines = [
-                                line.strip()
-                                for line in text.split("\n")
-                                if line.strip()
-                            ]
-                            extracted = "\n".join(lines)
-
-                    if not extracted:
-                        extracted = await asyncio.to_thread(
-                            trafilatura.extract, downloaded, favor_precision=True
+                        text = re.sub(
+                            r'<img\b(?:[^>"\']|"[^"]*"|\'[^\']*\')*?src="([^"]+)"(?:[^>"\']|"[^"]*"|\'[^\']*\')*>',
+                            repl_img,
+                            raw_content,
+                            flags=re.IGNORECASE,
                         )
+                        text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+                        text = re.sub(
+                            r"<script.*?>.*?</script>",
+                            "",
+                            text,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        )
+                        text = re.sub(
+                            r"<style.*?>.*?</style>",
+                            "",
+                            text,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        )
+                        text = re.sub(
+                            r'<(?:[^>"\']|"[^"]*"|\'[^\']*\')*>', " ", text
+                        )
+                        lines = [
+                            line.strip()
+                            for line in text.split("\n")
+                            if line.strip()
+                        ]
+                        extracted = "\n".join(lines)
 
-                    if extracted and len(extracted) > 10:
-                        full_content = extracted
-                        full_content_cache[item_link] = full_content
-                        col, _ = db.get_news_collections()
-                        if col is not None:
-                            try:
-                                await col.update_one(
-                                    {"link": item_link},
-                                    {"$set": {"full_content": full_content}},
-                                )
-                            except Exception as ex:
-                                print(f"全文更新失败: {ex}")
+                if not extracted:
+                    extracted = await asyncio.to_thread(
+                        trafilatura.extract, downloaded, favor_precision=True
+                    )
+
+                if extracted and len(extracted) > 10:
+                    full_content = extracted
+                    full_content_cache[item_link] = full_content
+                    col, _ = db.get_news_collections()
+                    if col is not None:
+                        try:
+                            await col.update_one(
+                                {"link": item_link},
+                                {"$set": {"full_content": full_content}},
+                            )
+                        except Exception as ex:
+                            logger.error(f"全文更新失败: {ex}")
     except Exception as e:
-        print(f"抓取全文失败 ({item_link}): {e}")
+        logger.warning(f"抓取全文失败 ({item_link}): {e}")
 
     return full_content
 
@@ -366,89 +370,89 @@ async def fetch_and_cache_image(url: str) -> Optional[bytes]:
                 image_cache[url] = img_data
                 return img_data
         except Exception as e:
-            print(f"MongoDB 图片读取失败: {e}")
+            logger.error(f"MongoDB 图片读取失败: {e}")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            async with client.stream(
-                "GET", url, headers={"User-Agent": feedparser.USER_AGENT}
-            ) as resp:
-                if resp.status_code == 200:
-                    chunks = []
-                    downloaded_size = 0
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        downloaded_size += len(chunk)
-                        if downloaded_size > 15 * 1024 * 1024:
-                            return None
-                    img_data = b"".join(chunks)
+        client = get_http_client()
+        async with client.stream(
+            "GET", url, headers={"User-Agent": feedparser.USER_AGENT}, timeout=10.0
+        ) as resp:
+            if resp.status_code == 200:
+                chunks = []
+                downloaded_size = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    downloaded_size += len(chunk)
+                    if downloaded_size > 15 * 1024 * 1024:
+                        return None
+                img_data = b"".join(chunks)
 
+                try:
+                    def process_image():
+                        Image.MAX_IMAGE_PIXELS = 10000000
+                        img = Image.open(io.BytesIO(img_data))
+                        if img.mode in ("RGBA", "P", "LA"):
+                            bg = Image.new("RGB", img.size, (255, 255, 255))
+                            if img.mode == "RGBA":
+                                bg.paste(img, mask=img.split()[3])
+                            else:
+                                bg.paste(
+                                    img.convert("RGBA"),
+                                    mask=img.convert("RGBA").split()[3],
+                                )
+                            img = bg
+                        elif img.mode != "RGB":
+                            img = img.convert("RGB")
+                        max_width = 240
+                        if img.width > max_width:
+                            ratio = max_width / img.width
+                            resample_mode = getattr(
+                                getattr(Image, "Resampling", Image),
+                                "LANCZOS",
+                                getattr(Image, "ANTIALIAS", 1)
+                            )
+                            img = img.resize(
+                                (max_width, int(img.height * ratio)),
+                                resample_mode,
+                            )
+                        out = io.BytesIO()
+                        img.save(out, format="JPEG", quality=65, optimize=True)
+                        return out.getvalue()
+
+                    img_data = await asyncio.to_thread(process_image)
+                except Exception as e:
+                    logger.warning(f"图片压缩失败: {e}")
+
+                image_cache[url] = img_data
+                if img_col is not None:
                     try:
-                        def process_image():
-                            Image.MAX_IMAGE_PIXELS = 10000000
-                            img = Image.open(io.BytesIO(img_data))
-                            if img.mode in ("RGBA", "P", "LA"):
-                                bg = Image.new("RGB", img.size, (255, 255, 255))
-                                if img.mode == "RGBA":
-                                    bg.paste(img, mask=img.split()[3])
-                                else:
-                                    bg.paste(
-                                        img.convert("RGBA"),
-                                        mask=img.convert("RGBA").split()[3],
-                                    )
-                                img = bg
-                            elif img.mode != "RGB":
-                                img = img.convert("RGB")
-                            max_width = 240
-                            if img.width > max_width:
-                                ratio = max_width / img.width
-                                resample_mode = getattr(
-                                    getattr(Image, "Resampling", Image),
-                                    "LANCZOS",
-                                    getattr(Image, "ANTIALIAS", 1)
-                                )
-                                img = img.resize(
-                                    (max_width, int(img.height * ratio)),
-                                    resample_mode,
-                                )
-                            out = io.BytesIO()
-                            img.save(out, format="JPEG", quality=65, optimize=True)
-                            return out.getvalue()
-
-                        img_data = await asyncio.to_thread(process_image)
+                        await img_col.update_one(
+                            {"_id": url},
+                            {
+                                "$set": {
+                                    "img_data": img_data,
+                                    "updated_at": time.time(),
+                                }
+                            },
+                            upsert=True,
+                        )
+                        last_docs = (
+                            await img_col.find({})
+                            .sort("updated_at", -1)
+                            .skip(1000)
+                            .limit(1)
+                            .to_list(length=1)
+                        )
+                        if last_docs:
+                            cutoff_time = last_docs[0]["updated_at"]
+                            await img_col.delete_many(
+                                {"updated_at": {"$lt": cutoff_time}}
+                            )
                     except Exception as e:
-                        print(f"图片压缩失败: {e}")
-
-                    image_cache[url] = img_data
-                    if img_col is not None:
-                        try:
-                            await img_col.update_one(
-                                {"_id": url},
-                                {
-                                    "$set": {
-                                        "img_data": img_data,
-                                        "updated_at": time.time(),
-                                    }
-                                },
-                                upsert=True,
-                            )
-                            last_docs = (
-                                await img_col.find({})
-                                .sort("updated_at", -1)
-                                .skip(1000)
-                                .limit(1)
-                                .to_list(length=1)
-                            )
-                            if last_docs:
-                                cutoff_time = last_docs[0]["updated_at"]
-                                await img_col.delete_many(
-                                    {"updated_at": {"$lt": cutoff_time}}
-                                )
-                        except Exception as e:
-                            print(f"MongoDB 图片保存失败: {e}")
-                    return img_data
+                        logger.error(f"MongoDB 图片保存失败: {e}")
+                return img_data
     except Exception as e:
-        print(f"代理图片失败 ({url}): {e}")
+        logger.warning(f"代理图片失败 ({url}): {e}")
     return None
 
 def generate_xhtml_response(request: Request, title: str, body_content: str, status_code: int = 200) -> Response:
