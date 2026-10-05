@@ -39,9 +39,7 @@ def get_weather_desc(condition_dict: dict) -> str:
 
 def format_aqi(aqi_data: Any) -> str:
     if aqi_data is None:
-        if not os.environ.get("WAQI_TOKEN"):
-            return "未配置Token"
-        return "未知"
+        return "暂无数据"
 
     aqi_val = None
     if isinstance(aqi_data, dict):

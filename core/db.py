@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 def _resolve_data_dir() -> str:
     env_dir = os.environ.get("DATA_DIR", "").strip()
     if env_dir:
+        os.makedirs(env_dir, exist_ok=True)
         return env_dir
     if os.path.exists("/data") and os.access("/data", os.W_OK):
         return "/data"
@@ -131,16 +132,17 @@ async def init_db() -> None:
 def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT count FROM visitors WHERE date = ? AND ip = ?", (today, ip))
+        cursor.execute(
+            """
+            INSERT INTO visitors (date, ip, count, location, clicks)
+            VALUES (?, ?, 1, '', '{}')
+            ON CONFLICT(date, ip) DO UPDATE SET count = visitors.count + 1
+            RETURNING count;
+        """,
+            (today, ip),
+        )
         row = cursor.fetchone()
-        is_new = row is None
-        if is_new:
-            cursor.execute(
-                "INSERT INTO visitors (date, ip, count, location, clicks) VALUES (?, ?, 1, '', '{}')",
-                (today, ip),
-            )
-        else:
-            cursor.execute("UPDATE visitors SET count = count + 1 WHERE date = ? AND ip = ?", (today, ip))
+        is_new = bool(row and row[0] == 1)
         cursor.execute("SELECT COUNT(*) FROM visitors WHERE date = ?", (today,))
         total_visitors = cursor.fetchone()[0]
     return total_visitors, is_new

@@ -14,3 +14,7 @@ README.md
 docs
 .vscode
 .ruff_cache
+*.db
+*.db-wal
+*.db-shm
+.secret_key

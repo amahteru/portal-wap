@@ -28,7 +28,7 @@ news_router = APIRouter()
 full_content_cache = TTLCache(maxsize=200, ttl=86400)
 image_cache = TTLCache(maxsize=50, ttl=86400)
 
-prefetch_queue: asyncio.Queue = asyncio.Queue()
+prefetch_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 
 feedparser.USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -139,11 +139,14 @@ async def sync_feed(cat_id: str) -> bool:
     current_time = time.time()
 
     try:
+        client = get_http_client()
+        resp = await client.get(
+            RSS_FEEDS[cat_id]["url"], headers={"User-Agent": feedparser.USER_AGENT}, timeout=10.0
+        )
+        if resp.status_code != 200:
+            return False
 
-        def _parse():
-            return feedparser.parse(RSS_FEEDS[cat_id]["url"])
-
-        feed = await asyncio.to_thread(_parse)
+        feed = await asyncio.to_thread(feedparser.parse, resp.content)
         new_entries = feed.entries
         if not new_entries:
             return False
@@ -159,7 +162,10 @@ async def sync_feed(cat_id: str) -> bool:
                 parsed_item = deserialize_item(s_item)
                 cache["items"].insert(added_count, parsed_item)
                 to_save.append(s_item)
-                prefetch_queue.put_nowait((link, cat_id))
+                try:
+                    prefetch_queue.put_nowait((link, cat_id))
+                except asyncio.QueueFull:
+                    pass
                 added_count += 1
 
         if to_save:
@@ -535,7 +541,7 @@ async def get_article(
         display_content = str(display_content)
 
     if full_content:
-        noise_pattern = r".*?新闻精选：|相关阅读|推荐阅读|猜你喜欢|版权声明"
+        noise_pattern = r"新闻精选[：:]|相关阅读|推荐阅读|猜你喜欢|版权声明"
         match = re.search(noise_pattern, display_content)
         if match:
             display_content = display_content[: match.start()]
@@ -552,7 +558,9 @@ async def get_article(
                 simple_line = re.sub(r"[^\w]", "", line_strip)
                 if simple_line == simple_title:
                     continue
-            if re.match(r"^[\-\d\s\:\u4e00-\u9fa5]+$", line_strip) and "年" in line_strip and "月" in line_strip:
+            if re.match(r"^\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}", line_strip) and (
+                "日" in line_strip or ":" in line_strip or "：" in line_strip or "来源" in line_strip
+            ):
                 continue
             cleaned_lines.append("　　" + html.escape(line_strip))
 

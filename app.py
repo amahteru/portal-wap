@@ -22,29 +22,32 @@ FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
 SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 
 ALLOWED_REDIRECT_DOMAINS = {"qq.ekiz.top", "ai.ekiz.top", "wap.baidu.com"}
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def is_safe_redirect_url(target: str) -> bool:
     if not target:
+        return False
+    if "\\" in target or "\t" in target or "\r" in target or "\n" in target:
         return False
     if target.startswith("/") and not target.startswith("//"):
         return True
     url_to_parse = f"http:{target}" if target.startswith("//") else target
     try:
         parsed = urllib.parse.urlparse(url_to_parse)
-        return parsed.netloc in ALLOWED_REDIRECT_DOMAINS
+        if parsed.scheme not in ("http", "https"):
+            return False
+        return parsed.hostname in ALLOWED_REDIRECT_DOMAINS
     except Exception:
         return False
 
 
 def get_beijing_date() -> str:
-    tz_bj = timezone(timedelta(hours=8))
-    return str(datetime.now(tz_bj).date())
+    return str(datetime.now(BEIJING_TZ).date())
 
 
 def get_greeting() -> str:
-    tz_bj = timezone(timedelta(hours=8))
-    hour = datetime.now(tz_bj).hour
+    hour = datetime.now(BEIJING_TZ).hour
     if 5 <= hour < 12:
         return "早上好，新的一天开始了"
     elif 12 <= hour < 18:
@@ -126,17 +129,17 @@ async def index(request: Request):
 
 @app.get("/redirect")
 async def redirect_to(request: Request, url: str, name: str | None = None):
-    today = get_beijing_date()
     client_ip = get_client_ip(request)
+    if not is_safe_redirect_url(url):
+        logger.warning(f"拦截未授权的重定向目标: {url} 来自 IP: {client_ip}")
+        return RedirectResponse(url="/", status_code=302)
+
+    today = get_beijing_date()
     if name:
         try:
             await db.record_click(client_ip, today, name)
         except Exception as e:
             logger.error(f"记录点击统计异常: {e}")
-
-    if not is_safe_redirect_url(url):
-        logger.warning(f"拦截未授权的重定向目标: {url} 来自 IP: {client_ip}")
-        return RedirectResponse(url="/", status_code=302)
 
     return RedirectResponse(url=url, status_code=302)
 
