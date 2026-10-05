@@ -212,6 +212,7 @@ async def weather_search(request: Request, keyword: str | None = ""):
             if kw == c or kw in c or c in kw:
                 matches.append((c, prov))
 
+    matches = matches[:30]
     if matches:
         match_links = "<br/>".join(
             [f'&gt; <a href="/weather/city/{urllib.parse.quote(c)}">{escape(c)} ({escape(p)})</a>' for c, p in matches]

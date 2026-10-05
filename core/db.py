@@ -4,19 +4,27 @@ import logging
 import os
 import secrets
 import sqlite3
+import tempfile
 import time
 from contextlib import contextmanager
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.environ.get("DATA_DIR", "").strip()
-if not DATA_DIR:
+def _resolve_data_dir() -> str:
+    env_dir = os.environ.get("DATA_DIR", "").strip()
+    if env_dir:
+        return env_dir
     if os.path.exists("/data") and os.access("/data", os.W_OK):
-        DATA_DIR = "/data"
-    else:
-        DATA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return "/data"
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.access(project_root, os.W_OK):
+        return project_root
+    tmp_fallback = os.path.join(tempfile.gettempdir(), "portal_data")
+    os.makedirs(tmp_fallback, exist_ok=True)
+    return tmp_fallback
 
+DATA_DIR = _resolve_data_dir()
 DB_PATH = os.path.join(DATA_DIR, "portal.db")
 
 
@@ -59,9 +67,13 @@ def get_db():
 
 def _init_db_sync() -> None:
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    with sqlite3.connect(DB_PATH, timeout=20.0) as setup_conn:
+    setup_conn = sqlite3.connect(DB_PATH, timeout=20.0)
+    try:
         setup_conn.execute("PRAGMA journal_mode=WAL;")
         setup_conn.execute("PRAGMA synchronous=NORMAL;")
+    finally:
+        setup_conn.close()
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -69,7 +81,7 @@ def _init_db_sync() -> None:
                 date TEXT NOT NULL,
                 ip TEXT NOT NULL,
                 count INTEGER DEFAULT 1,
-                location TEXT DEFAULT '未知',
+                location TEXT DEFAULT '',
                 clicks TEXT DEFAULT '{}',
                 PRIMARY KEY (date, ip)
             );
@@ -116,10 +128,6 @@ async def init_db() -> None:
     await asyncio.to_thread(_init_db_sync)
 
 
-async def close_db() -> None:
-    pass
-
-
 def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
     with get_db() as conn:
         cursor = conn.cursor()
@@ -128,7 +136,7 @@ def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
         is_new = row is None
         if is_new:
             cursor.execute(
-                "INSERT INTO visitors (date, ip, count, location, clicks) VALUES (?, ?, 1, '查询中...', '{}')",
+                "INSERT INTO visitors (date, ip, count, location, clicks) VALUES (?, ?, 1, '', '{}')",
                 (today, ip),
             )
         else:
@@ -140,15 +148,6 @@ def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
 
 async def record_visitor(ip: str, today: str) -> tuple[int, bool]:
     return await asyncio.to_thread(_record_visitor_sync, ip, today)
-
-
-def _update_visitor_location_sync(ip: str, today: str, location: str) -> None:
-    with get_db() as conn:
-        conn.execute("UPDATE visitors SET location = ? WHERE date = ? AND ip = ?", (location, today, ip))
-
-
-async def update_visitor_location(ip: str, today: str, location: str) -> None:
-    await asyncio.to_thread(_update_visitor_location_sync, ip, today, location)
 
 
 def _record_click_sync(ip: str, today: str, name: str) -> None:
@@ -170,25 +169,6 @@ def _record_click_sync(ip: str, today: str, name: str) -> None:
 
 async def record_click(ip: str, today: str, name: str) -> None:
     await asyncio.to_thread(_record_click_sync, ip, today, name)
-
-
-def _get_visitor_stats_sync(today: str) -> dict[str, Any]:
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT ip, count, location, clicks FROM visitors WHERE date = ?", (today,))
-        rows = cursor.fetchall()
-        ips = {}
-        for r in rows:
-            try:
-                clicks = json.loads(r["clicks"])
-            except Exception:
-                clicks = {}
-            ips[r["ip"]] = {"count": r["count"], "location": r["location"], "clicks": clicks}
-        return {"current_date": today, "total_visitors": len(ips), "source": "sqlite", "ips": ips}
-
-
-async def get_visitor_stats(today: str) -> dict[str, Any]:
-    return await asyncio.to_thread(_get_visitor_stats_sync, today)
 
 
 def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
@@ -227,18 +207,22 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: f
         """,
             (cat_id, sync_time),
         )
-        cursor.execute(
-            """
-            DELETE FROM news_articles
-            WHERE cat_id = ? AND link_hash NOT IN (
-                SELECT link_hash FROM news_articles
-                WHERE cat_id = ?
-                ORDER BY published_parsed DESC, created_at DESC
-                LIMIT 1000
+
+        # 优化修剪策略：当超过 1200 条时才批量淘汰最旧的 200 条，避免每次插入做全局子查询
+        cursor.execute("SELECT COUNT(*) FROM news_articles WHERE cat_id = ?", (cat_id,))
+        if cursor.fetchone()[0] > 1200:
+            cursor.execute(
+                """
+                DELETE FROM news_articles
+                WHERE cat_id = ? AND link_hash IN (
+                    SELECT link_hash FROM news_articles
+                    WHERE cat_id = ?
+                    ORDER BY published_parsed ASC, created_at ASC
+                    LIMIT 200
+                )
+            """,
+                (cat_id, cat_id),
             )
-        """,
-            (cat_id, cat_id),
-        )
 
 
 async def save_news_items(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
@@ -321,12 +305,16 @@ def _save_cached_image_sync(url: str, data: bytes, content_type: str) -> None:
         """,
             (url, data, content_type, time.time()),
         )
-        conn.execute("""
-            DELETE FROM image_cache
-            WHERE url NOT IN (
-                SELECT url FROM image_cache ORDER BY updated_at DESC LIMIT 1000
-            )
-        """)
+        # 优化修剪策略：当缓存超过 1200 张时批量清理最旧的 200 张，显著降低锁争用
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM image_cache")
+        if cursor.fetchone()[0] > 1200:
+            conn.execute("""
+                DELETE FROM image_cache
+                WHERE url IN (
+                    SELECT url FROM image_cache ORDER BY updated_at ASC LIMIT 200
+                )
+            """)
 
 
 async def save_cached_image(url: str, data: bytes, content_type: str) -> None:

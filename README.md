@@ -36,7 +36,7 @@ pinned: false
   - **内置 SQLite (WAL 模式)**：无需安装配置任何外部数据库（如 MongoDB/MySQL），免除第三方数据库账户与网络延迟。
   - **容器与 Space 自动适配**：优先挂载 Hugging Face Spaces Persistent Storage (`/data/portal.db`)，重启不丢数据；本地开发则默认保存在项目根目录。
   - **零配置安全密钥**：未设置 `SECRET_KEY` 时自动生成安全的 32 字节高熵随机密钥，即开即用。
-  - **健康检查与监控**：提供 `/health` 探针与 `/admin/ips` 访客统计接口。
+  - **健康检查**：提供标准 `/health` 探针接口供容器与负载均衡检测。
 
 ---
 

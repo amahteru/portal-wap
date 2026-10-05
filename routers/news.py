@@ -177,23 +177,24 @@ async def sync_feed(cat_id: str) -> bool:
 
 
 async def background_refresher() -> None:
-    try:
-        await asyncio.sleep(5)
-        while True:
+    await asyncio.sleep(5)
+    while True:
+        try:
             for cat_id in RSS_FEEDS:
                 await sync_feed(cat_id)
                 await asyncio.sleep(2)
             await asyncio.sleep(CACHE_TTL)
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error(f"新闻后台刷新任务异常: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"新闻后台刷新任务循环异常，将在60秒后重试: {e}")
+            await asyncio.sleep(60)
 
 
 async def prefetch_worker() -> None:
-    try:
-        await asyncio.sleep(10)
-        while True:
+    await asyncio.sleep(10)
+    while True:
+        try:
             item_link, cat = await prefetch_queue.get()
             try:
                 full_content = await fetch_article_content(item_link, cat)
@@ -207,10 +208,11 @@ async def prefetch_worker() -> None:
             finally:
                 prefetch_queue.task_done()
             await asyncio.sleep(2)
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error(f"新闻预抓取队列任务异常: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"新闻预抓取队列任务循环异常: {e}")
+            await asyncio.sleep(10)
 
 
 async def get_news_items(cat_id: str) -> list:
@@ -377,7 +379,8 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
 
                     img_data = await asyncio.to_thread(process_image)
                 except Exception as e:
-                    logger.warning(f"图片压缩失败: {e}")
+                    logger.warning(f"图片压缩/识别失败 ({url}): {e}")
+                    return None
 
                 image_cache[url] = img_data
                 try:
@@ -409,6 +412,7 @@ async def news_root():
 
 @news_router.get("/category/{cat_id}")
 async def get_category(request: Request, cat_id: str, page: int = 1):
+    page = max(1, page)
     if cat_id not in RSS_FEEDS:
         cat_id = "importnews"
     cat_name = RSS_FEEDS[cat_id]["name"]
@@ -433,6 +437,8 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
     list_html = ""
     if not items:
         list_html = "该频道暂无内容或源站拦截<br/>\n"
+    elif not page_items:
+        list_html = "已到最后一页<br/>\n"
     else:
         for i, item in enumerate(page_items):
             real_index = start_idx + i
@@ -464,7 +470,7 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
     </div>
     <div class="nav">
         <a href="/">[返回门户首页]</a><br/>
-        <small>&copy; 2026 Ekiz WAP</small>
+        <small>&#169; 2026 Ekiz WAP</small>
     </div>
     """
     return generate_xhtml_response(request, f"WAP新闻 - {cat_name}", body_content)
@@ -613,7 +619,7 @@ async def image_proxy(url: str, sign: str = ""):
 _background_tasks: list[asyncio.Task] = []
 
 
-async def start_news_tasks(app: Any | None = None) -> list[asyncio.Task]:
+async def start_news_tasks() -> list[asyncio.Task]:
     await load_all_from_db()
     t1 = asyncio.create_task(background_refresher())
     t2 = asyncio.create_task(prefetch_worker())
@@ -625,4 +631,6 @@ async def stop_news_tasks() -> None:
     for task in _background_tasks:
         if not task.done():
             task.cancel()
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
     _background_tasks.clear()

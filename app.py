@@ -1,15 +1,15 @@
-import asyncio
 import logging
 import os
+import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from core import db
-from core.http import close_http_client, get_http_client, init_http_client
+from core.http import close_http_client, init_http_client
 from core.ui import render_xhtml
 from routers.news import news_router, start_news_tasks, stop_news_tasks
 from routers.weather import weather_router
@@ -21,7 +21,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
 SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 
-_background_tasks = set()
+ALLOWED_REDIRECT_DOMAINS = {"qq.ekiz.top", "ai.ekiz.top", "wap.baidu.com"}
+
+
+def is_safe_redirect_url(target: str) -> bool:
+    if not target:
+        return False
+    if target.startswith("/") and not target.startswith("//"):
+        return True
+    url_to_parse = f"http:{target}" if target.startswith("//") else target
+    try:
+        parsed = urllib.parse.urlparse(url_to_parse)
+        return parsed.netloc in ALLOWED_REDIRECT_DOMAINS
+    except Exception:
+        return False
 
 
 def get_beijing_date() -> str:
@@ -49,28 +62,6 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "127.0.0.1"
 
 
-async def fetch_and_save_ip_location(ip: str, today: str):
-    if not ip or ip.startswith(("127.", "192.168.", "10.", "172.")):
-        location = "本地/局域网IP"
-    else:
-        location = "未知归属地"
-        try:
-            client = get_http_client()
-            resp = await client.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=4.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status") == "success":
-                    location = f"{data.get('country', '')} {data.get('regionName', '')} {data.get('city', '')}".strip()
-        except Exception as e:
-            logger.warning(f"获取 IP 归属地失败 ({ip}): {e}")
-            location = "查询超时或失败"
-
-    try:
-        await db.update_visitor_location(ip, today, location)
-    except Exception as e:
-        logger.error(f"更新 IP 归属地入库异常: {e}")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db()
@@ -93,11 +84,7 @@ async def index(request: Request):
     client_ip = get_client_ip(request)
 
     try:
-        visit_count, is_new = await db.record_visitor(client_ip, today)
-        if is_new:
-            task = asyncio.create_task(fetch_and_save_ip_location(client_ip, today))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+        visit_count, _ = await db.record_visitor(client_ip, today)
     except Exception as e:
         logger.error(f"记录访客异常: {e}")
         visit_count = 1
@@ -131,7 +118,7 @@ async def index(request: Request):
         </div>
         <div class="nav">
             <small>浙ICP备08012345号-1</small><br/>
-            <small>&copy; 2026 Ekiz WAP</small>
+            <small>&#169; 2026 Ekiz WAP</small>
         </div>
     """
     return render_xhtml(request, "WAP导航页", body)
@@ -146,18 +133,12 @@ async def redirect_to(request: Request, url: str, name: str | None = None):
             await db.record_click(client_ip, today, name)
         except Exception as e:
             logger.error(f"记录点击统计异常: {e}")
+
+    if not is_safe_redirect_url(url):
+        logger.warning(f"拦截未授权的重定向目标: {url} 来自 IP: {client_ip}")
+        return RedirectResponse(url="/", status_code=302)
+
     return RedirectResponse(url=url, status_code=302)
-
-
-@app.get("/admin/ips")
-async def view_ips():
-    today = get_beijing_date()
-    try:
-        stats = await db.get_visitor_stats(today)
-        return JSONResponse(stats)
-    except Exception as e:
-        logger.error(f"查询访客仪表盘异常: {e}")
-        return JSONResponse({"current_date": today, "total_visitors": 0, "source": "error", "error": str(e), "ips": {}})
 
 
 @app.get("/health")
