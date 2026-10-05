@@ -8,7 +8,6 @@ from typing import Optional, Any
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
-import httpx
 from cachetools import TTLCache
 
 from core.http import get_http_client
@@ -17,11 +16,9 @@ logger = logging.getLogger(__name__)
 
 weather_router = APIRouter()
 
-# 内存缓存（TTL 1800秒，容量300）
 weather_cache = TTLCache(maxsize=300, ttl=1800)
 aqi_cache = TTLCache(maxsize=300, ttl=1800)
 
-# 全国省市行政区划字典
 CITIES_DB = {
     "北京": ["北京"],
     "天津": ["天津"],

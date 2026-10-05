@@ -12,7 +12,6 @@ from typing import Optional, List, Any
 
 from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import RedirectResponse
-import httpx
 import feedparser
 import trafilatura
 import secrets
@@ -232,7 +231,6 @@ async def fetch_article_content(item_link: str, cat: str) -> Optional[str]:
         return full_content
 
     link_hash = hashlib.md5(item_link.encode("utf-8")).hexdigest()
-    # 优先从 SQLite 持久化中读取已抓取的全文，避免重复爬取与防盗链拦截
     try:
         article = await db.get_article(cat, link_hash)
         if article and article.get("full_content"):
@@ -329,7 +327,6 @@ async def fetch_and_cache_image(url: str) -> Optional[bytes]:
     if url in image_cache:
         return image_cache[url]
 
-    # 优先从 SQLite 缓存中读取压缩处理后的图片
     try:
         cached = await db.get_cached_image(url)
         if cached:
