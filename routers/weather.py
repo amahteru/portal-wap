@@ -120,7 +120,13 @@ async def fetch_aqi_data(city: str) -> dict | None:
 
 
 def generate_xhtml_response(request: Request, title: str, body_content: str, status_code: int = 200) -> Response:
-    return render_xhtml(request, title, body_content, status_code=status_code)
+    return render_xhtml(
+        request,
+        title,
+        body_content,
+        status_code=status_code,
+        headers={"Cache-Control": "private, max-age=120"},
+    )
 
 
 @weather_router.get("")

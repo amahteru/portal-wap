@@ -12,7 +12,7 @@ from typing import Any
 import feedparser
 import trafilatura
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 from PIL import Image
 
@@ -26,19 +26,17 @@ logger = logging.getLogger(__name__)
 news_router = APIRouter()
 
 full_content_cache = TTLCache(maxsize=200, ttl=86400)
-image_cache = TTLCache(maxsize=50, ttl=86400)
-
-prefetch_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+image_cache = TTLCache(maxsize=300, ttl=86400)
+image_fail_cache = TTLCache(maxsize=300, ttl=1800)
 
 feedparser.USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-SECRET_KEY = get_secret_key()
-
 
 def sign_url(url: str) -> str:
-    return hmac.new(SECRET_KEY, url.encode("utf-8"), hashlib.sha256).hexdigest()
+    key = get_secret_key()
+    return hmac.new(key, url.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def verify_url(url: str, sign: str) -> bool:
@@ -70,7 +68,7 @@ RSS_FEEDS = {
 }
 
 CACHE_TTL = 600
-news_cache = {cat_id: {"timestamp": 0, "items": []} for cat_id in RSS_FEEDS}
+news_cache: dict[str, list[dict[str, Any]]] = {cat_id: [] for cat_id in RSS_FEEDS}
 
 
 def serialize_item(item: Any, cat_id: str) -> dict:
@@ -122,10 +120,9 @@ def deserialize_item(doc: dict) -> dict:
 async def load_all_from_db() -> None:
     try:
         for cat_id in RSS_FEEDS:
-            docs, last_sync = await db.load_news_by_cat(cat_id, limit=300)
+            docs = await db.load_news_by_cat(cat_id, limit=300)
             if docs:
-                news_cache[cat_id]["items"] = [deserialize_item(doc) for doc in docs]
-                news_cache[cat_id]["timestamp"] = last_sync
+                news_cache[cat_id] = [deserialize_item(doc) for doc in docs]
         logger.info("成功从 SQLite 加载新闻持久化缓存数据")
     except Exception as e:
         logger.error(f"从 SQLite 恢复新闻缓存失败: {e}")
@@ -135,7 +132,7 @@ async def sync_feed(cat_id: str) -> bool:
     if cat_id not in RSS_FEEDS:
         return False
 
-    cache = news_cache[cat_id]
+    current_items = news_cache[cat_id]
     current_time = time.time()
 
     try:
@@ -151,7 +148,7 @@ async def sync_feed(cat_id: str) -> bool:
         if not new_entries:
             return False
 
-        existing_links = {it.get("link", "") for it in cache["items"]}
+        existing_links = {it.get("link", "") for it in current_items}
         to_save = []
         added_count = 0
 
@@ -160,12 +157,8 @@ async def sync_feed(cat_id: str) -> bool:
             link = s_item.get("link", "")
             if link and link not in existing_links:
                 parsed_item = deserialize_item(s_item)
-                cache["items"].insert(added_count, parsed_item)
+                current_items.insert(added_count, parsed_item)
                 to_save.append(s_item)
-                try:
-                    prefetch_queue.put_nowait((link, cat_id))
-                except asyncio.QueueFull:
-                    pass
                 added_count += 1
 
         if to_save:
@@ -174,8 +167,7 @@ async def sync_feed(cat_id: str) -> bool:
             except Exception as ex:
                 logger.error(f"SQLite 新闻写入失败 ({cat_id}): {ex}")
 
-        cache["items"] = cache["items"][:300]
-        cache["timestamp"] = current_time
+        news_cache[cat_id] = current_items[:300]
         return True
     except Exception as e:
         logger.error(f"同步新闻失败 ({cat_id}): {e}")
@@ -197,37 +189,14 @@ async def background_refresher() -> None:
             await asyncio.sleep(60)
 
 
-async def prefetch_worker() -> None:
-    await asyncio.sleep(10)
-    while True:
-        try:
-            item_link, cat = await prefetch_queue.get()
-            try:
-                full_content = await fetch_article_content(item_link, cat)
-                if isinstance(full_content, str):
-                    img_urls = re.findall(r"\[IMAGE:(.*?)\]", full_content)
-                    for img_url in img_urls:
-                        await fetch_and_cache_image(img_url)
-                        await asyncio.sleep(1)
-            except Exception as e:
-                logger.warning(f"预抓取文章出错 ({item_link}): {e}")
-            finally:
-                prefetch_queue.task_done()
-            await asyncio.sleep(2)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"新闻预抓取队列任务循环异常: {e}")
-            await asyncio.sleep(10)
-
-
 async def get_news_items(cat_id: str) -> list:
     if cat_id not in RSS_FEEDS:
         cat_id = "importnews"
-    cache = news_cache[cat_id]
-    if not cache["items"]:
+    items = news_cache.get(cat_id, [])
+    if not items:
         await sync_feed(cat_id)
-    return cache["items"]
+        items = news_cache.get(cat_id, [])
+    return items
 
 
 async def fetch_article_content(item_link: str, cat: str) -> str | None:
@@ -260,7 +229,21 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
                     size += len(chunk)
                     if size > 2 * 1024 * 1024:
                         break
-                downloaded = b"".join(chunks).decode("utf-8", errors="ignore")
+                raw_bytes = b"".join(chunks)
+                enc = "utf-8"
+                lower_head = raw_bytes[:2000].lower()
+                if b"charset=gb2312" in lower_head or b"charset=gbk" in lower_head:
+                    enc = "gbk"
+                elif b"charset=gb18030" in lower_head:
+                    enc = "gb18030"
+
+                try:
+                    downloaded = raw_bytes.decode(enc)
+                except UnicodeDecodeError:
+                    try:
+                        downloaded = raw_bytes.decode("gb18030")
+                    except UnicodeDecodeError:
+                        downloaded = raw_bytes.decode("utf-8", errors="ignore")
                 extracted = None
 
                 if "chinanews.com" in item_link:
@@ -325,6 +308,8 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
 async def fetch_and_cache_image(url: str) -> bytes | None:
     if not url or not url.startswith(("http://", "https://")):
         return None
+    if url in image_fail_cache:
+        return None
     if url in image_cache:
         cached_img = image_cache.get(url)
         if isinstance(cached_img, bytes):
@@ -349,6 +334,7 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                     chunks.append(chunk)
                     downloaded_size += len(chunk)
                     if downloaded_size > 15 * 1024 * 1024:
+                        image_fail_cache[url] = True
                         return None
                 img_data = b"".join(chunks)
 
@@ -386,6 +372,7 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                     img_data = await asyncio.to_thread(process_image)
                 except Exception as e:
                     logger.warning(f"图片压缩/识别失败 ({url}): {e}")
+                    image_fail_cache[url] = True
                     return None
 
                 image_cache[url] = img_data
@@ -394,8 +381,11 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                 except Exception as e:
                     logger.error(f"SQLite 图片保存失败: {e}")
                 return img_data
+            else:
+                image_fail_cache[url] = True
     except Exception as e:
         logger.warning(f"代理图片失败 ({url}): {e}")
+        image_fail_cache[url] = True
     return None
 
 
@@ -483,7 +473,6 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
 
 
 @news_router.get("/article")
-@news_router.get("/article/{cat}/{item_id}")
 async def get_article(
     request: Request,
     cat: str = "importnews",
@@ -527,7 +516,19 @@ async def get_article(
                 logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
 
     if not item:
-        raise HTTPException(status_code=404, detail="新闻未找到")
+        cat_name = RSS_FEEDS.get(cat, {}).get("name", "要闻")
+        body_content = f"""
+        <div class="header">404 - 新闻未找到</div>
+        <div class="content">
+            抱歉，您请求的新闻不存在或已过期。<br/>
+            请返回频道列表浏览其他最新资讯。
+        </div>
+        <div class="nav">
+            <a href="/news/category/{cat}">[返回{html.escape(cat_name)}频道]</a><br/>
+            <a href="/">[返回门户首页]</a>
+        </div>
+        """
+        return generate_xhtml_response(request, "404 - 新闻未找到", body_content, status_code=404)
 
     item_link = item.get("link", "")
     title = item.get("title", "无标题")
@@ -612,7 +613,7 @@ async def get_article(
 @news_router.get("/proxy-image")
 async def image_proxy(url: str, sign: str = ""):
     if not sign or not verify_url(url, sign):
-        raise HTTPException(status_code=403, detail="Invalid signature or unauthorized URL")
+        return Response(content=b"Forbidden", status_code=403, media_type="text/plain")
 
     img_data = await fetch_and_cache_image(url)
     if img_data:
@@ -621,7 +622,7 @@ async def image_proxy(url: str, sign: str = ""):
             media_type="image/jpeg",
             headers={"Cache-Control": "public, max-age=86400"},
         )
-    return Response(status_code=404)
+    return Response(content=b"", status_code=404, media_type="text/plain")
 
 
 _background_tasks: list[asyncio.Task] = []
@@ -630,9 +631,8 @@ _background_tasks: list[asyncio.Task] = []
 async def start_news_tasks() -> list[asyncio.Task]:
     await load_all_from_db()
     t1 = asyncio.create_task(background_refresher())
-    t2 = asyncio.create_task(prefetch_worker())
-    _background_tasks.extend([t1, t2])
-    return [t1, t2]
+    _background_tasks.append(t1)
+    return [t1]
 
 
 async def stop_news_tasks() -> None:
