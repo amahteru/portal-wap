@@ -11,6 +11,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 import httpx
 
 from core import db
+from routers.weather import weather_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Portal WAP", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=500)
+app.include_router(weather_router, prefix="/weather")
 
 @app.get("/")
 async def index(request: Request):
