@@ -12,6 +12,7 @@ import httpx
 
 from core import db
 from routers.weather import weather_router
+from routers.news import news_router, start_news_tasks, stop_news_tasks
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
@@ -140,12 +141,15 @@ async def lifespan(app: FastAPI):
             print(f"初始化数据库跨天状态异常: {e}")
     else:
         memory_visitors["current_date"] = today
+    await start_news_tasks(app)
     yield
+    await stop_news_tasks()
     await db.close_db()
 
 app = FastAPI(title="Portal WAP", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.include_router(weather_router, prefix="/weather")
+app.include_router(news_router, prefix="/news")
 
 @app.get("/")
 async def index(request: Request):
