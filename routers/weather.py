@@ -1,14 +1,14 @@
-import os
-import logging
-import urllib.parse
 import asyncio
+import logging
+import os
+import urllib.parse
 from datetime import datetime
 from html import escape
-from typing import Optional, Any
+from typing import Any
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
-from cachetools import TTLCache
 
 from core.http import get_http_client
 
@@ -203,10 +203,12 @@ def format_aqi(aqi_data: Any) -> str:
             pass
     return "未知"
 
-async def fetch_weather_data(city: str) -> Optional[dict]:
+async def fetch_weather_data(city: str) -> dict | None:
     cache_key = city.strip()
     if cache_key in weather_cache:
-        return weather_cache[cache_key]
+        cached = weather_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
 
     url = f"https://wttr.in/{urllib.parse.quote(cache_key)}?format=j1&lang=zh-cn"
     headers = {
@@ -217,16 +219,19 @@ async def fetch_weather_data(city: str) -> Optional[dict]:
         resp = await client.get(url, headers=headers, timeout=8.0)
         if resp.status_code == 200:
             data = resp.json()
-            weather_cache[cache_key] = data
-            return data
+            if isinstance(data, dict):
+                weather_cache[cache_key] = data
+                return data
     except Exception as e:
         logger.warning(f"获取城市天气失败 ({city}): {e}")
     return None
 
-async def fetch_aqi_data(city: str) -> Optional[dict]:
+async def fetch_aqi_data(city: str) -> dict | None:
     cache_key = city.strip()
     if cache_key in aqi_cache:
-        return aqi_cache[cache_key]
+        cached = aqi_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
 
     token = os.environ.get("WAQI_TOKEN", "").strip()
     if not token:
@@ -240,7 +245,7 @@ async def fetch_aqi_data(city: str) -> Optional[dict]:
             data = resp.json()
             if data.get("status") == "ok":
                 aqi_info = data.get("data")
-                if aqi_info:
+                if isinstance(aqi_info, dict):
                     aqi_cache[cache_key] = aqi_info
                     return aqi_info
     except Exception as e:
@@ -288,7 +293,7 @@ def generate_xhtml_response(request: Request, title: str, body_content: str, sta
 
 @weather_router.get("")
 @weather_router.get("/")
-async def weather_home(request: Request, prov: Optional[str] = None, city: Optional[str] = None):
+async def weather_home(request: Request, prov: str | None = None, city: str | None = None):
     if city:
         return RedirectResponse(url=f"/weather/city/{urllib.parse.quote(city)}", status_code=302)
 
@@ -309,8 +314,8 @@ async def weather_home(request: Request, prov: Optional[str] = None, city: Optio
     hot_cities = ["北京", "上海", "广州", "深圳", "天津", "重庆", "杭州", "南京", "武汉", "成都", "西安"]
     hot_links = " | ".join([f'<a href="/weather/city/{urllib.parse.quote(c)}">{escape(c)}</a>' for c in hot_cities])
 
-    prov_options = "".join([f'<option value="{escape(p)}">{escape(p)}</option>' for p in CITIES_DB.keys()])
-    prov_links = " | ".join([f'<a href="/weather?prov={urllib.parse.quote(p)}">{escape(p)}</a>' for p in CITIES_DB.keys()])
+    prov_options = "".join([f'<option value="{escape(p)}">{escape(p)}</option>' for p in CITIES_DB])
+    prov_links = " | ".join([f'<a href="/weather?prov={urllib.parse.quote(p)}">{escape(p)}</a>' for p in CITIES_DB])
 
     saved_cookie = request.cookies.get("saved_city")
     saved_city = urllib.parse.unquote(saved_cookie) if saved_cookie else None
@@ -348,7 +353,7 @@ async def weather_home(request: Request, prov: Optional[str] = None, city: Optio
     return generate_xhtml_response(request, "天气预报", body)
 
 @weather_router.get("/search")
-async def weather_search(request: Request, keyword: Optional[str] = ""):
+async def weather_search(request: Request, keyword: str | None = ""):
     kw = (keyword or "").strip()
     if not kw:
         body = """

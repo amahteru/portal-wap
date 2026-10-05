@@ -1,18 +1,17 @@
-import os
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import RedirectResponse, FileResponse, JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from core import db
-from core.http import init_http_client, close_http_client, get_http_client
-from routers.weather import weather_router
+from core.http import close_http_client, get_http_client, init_http_client
 from routers.news import news_router, start_news_tasks, stop_news_tasks
+from routers.weather import weather_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -165,7 +164,7 @@ async def index(request: Request):
     return Response(content=content, media_type=f"{media_type}; charset=utf-8")
 
 @app.get("/redirect")
-async def redirect_to(request: Request, url: str, name: Optional[str] = None):
+async def redirect_to(request: Request, url: str, name: str | None = None):
     today = get_beijing_date()
     client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1")
     if client_ip:

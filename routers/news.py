@@ -1,21 +1,21 @@
-import os
-import io
-import re
-import html
-import time
-import hmac
-import hashlib
 import asyncio
+import hashlib
+import hmac
+import html
+import io
 import logging
+import os
+import re
+import secrets
+import time
 import urllib.parse
-from typing import Optional, List, Any
+from typing import Any
 
-from fastapi import APIRouter, Request, Response, HTTPException
-from fastapi.responses import RedirectResponse
 import feedparser
 import trafilatura
-import secrets
 from cachetools import TTLCache
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from PIL import Image
 
 from core import db
@@ -71,7 +71,7 @@ RSS_FEEDS = {
 }
 
 CACHE_TTL = 600
-news_cache = {cat_id: {"timestamp": 0, "items": []} for cat_id in RSS_FEEDS.keys()}
+news_cache = {cat_id: {"timestamp": 0, "items": []} for cat_id in RSS_FEEDS}
 
 class FakeItem:
     def __init__(self, data: dict):
@@ -129,7 +129,7 @@ def deserialize_item(doc: dict) -> FakeItem:
 
 async def load_all_from_db() -> None:
     try:
-        for cat_id in RSS_FEEDS.keys():
+        for cat_id in RSS_FEEDS:
             docs, last_sync = await db.load_news_by_cat(cat_id, limit=300)
             if docs:
                 news_cache[cat_id]["items"] = [deserialize_item(doc) for doc in docs]
@@ -186,7 +186,7 @@ async def background_refresher() -> None:
     try:
         await asyncio.sleep(5)
         while True:
-            for cat_id in RSS_FEEDS.keys():
+            for cat_id in RSS_FEEDS:
                 await sync_feed(cat_id)
                 await asyncio.sleep(2)
             await asyncio.sleep(CACHE_TTL)
@@ -225,11 +225,14 @@ async def get_news_items(cat_id: str) -> list:
         await sync_feed(cat_id)
     return cache["items"]
 
-async def fetch_article_content(item_link: str, cat: str) -> Optional[str]:
-    full_content = full_content_cache.get(item_link)
-    if full_content or not item_link or cat == "tech":
-        return full_content
+async def fetch_article_content(item_link: str, cat: str) -> str | None:
+    cached = full_content_cache.get(item_link)
+    if isinstance(cached, str):
+        return cached
+    if not item_link or cat == "tech":
+        return None
 
+    full_content: str | None = None
     link_hash = hashlib.md5(item_link.encode("utf-8")).hexdigest()
     try:
         article = await db.get_article(cat, link_hash)
@@ -319,13 +322,15 @@ async def fetch_article_content(item_link: str, cat: str) -> Optional[str]:
     except Exception as e:
         logger.warning(f"抓取全文失败 ({item_link}): {e}")
 
-    return full_content
+    return full_content if isinstance(full_content, str) else None
 
-async def fetch_and_cache_image(url: str) -> Optional[bytes]:
+async def fetch_and_cache_image(url: str) -> bytes | None:
     if not url or not url.startswith(("http://", "https://")):
         return None
     if url in image_cache:
-        return image_cache[url]
+        cached_img = image_cache.get(url)
+        if isinstance(cached_img, bytes):
+            return cached_img
 
     try:
         cached = await db.get_cached_image(url)
@@ -454,7 +459,7 @@ async def news_root():
     return RedirectResponse(url="/news/category/importnews", status_code=302)
 
 @news_router.get("/category/{cat_id}")
-async def get_category(request: Request, cat_id: str, page: int = 1, d: Optional[str] = None):
+async def get_category(request: Request, cat_id: str, page: int = 1, d: str | None = None):
     if cat_id not in RSS_FEEDS:
         cat_id = "importnews"
     today_date = time.strftime("%Y%m%d")
@@ -529,9 +534,9 @@ async def get_category(request: Request, cat_id: str, page: int = 1, d: Optional
 async def get_article(
     request: Request,
     cat: str = "importnews",
-    item_id: Optional[str] = None,
-    id: Optional[str] = None,
-    url: Optional[str] = None,
+    item_id: str | None = None,
+    id: str | None = None,
+    url: str | None = None,
 ):
     target_id = item_id or id
     if cat not in RSS_FEEDS:
@@ -559,12 +564,13 @@ async def get_article(
 
     if not item and (target_id or url):
         query_key = target_id or url
-        try:
-            doc = await db.get_article(cat, query_key)
-            if doc:
-                item = deserialize_item(doc)
-        except Exception as ex:
-            logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
+        if query_key:
+            try:
+                doc = await db.get_article(cat, query_key)
+                if doc:
+                    item = deserialize_item(doc)
+            except Exception as ex:
+                logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
 
     if not item:
         raise HTTPException(status_code=404, detail="新闻未找到")
@@ -678,9 +684,9 @@ async def image_proxy(url: str, sign: str = ""):
         )
     return Response(status_code=404)
 
-_background_tasks: List[asyncio.Task] = []
+_background_tasks: list[asyncio.Task] = []
 
-async def start_news_tasks(app: Optional[Any] = None) -> List[asyncio.Task]:
+async def start_news_tasks(app: Any | None = None) -> list[asyncio.Task]:
     await load_all_from_db()
     t1 = asyncio.create_task(background_refresher())
     t2 = asyncio.create_task(prefetch_worker())

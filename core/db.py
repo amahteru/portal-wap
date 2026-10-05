@@ -1,11 +1,11 @@
+import asyncio
+import json
+import logging
 import os
 import sqlite3
-import json
 import time
-import asyncio
-import logging
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ async def init_db() -> None:
 async def close_db() -> None:
     pass
 
-def _record_visitor_sync(ip: str, today: str) -> Tuple[int, bool]:
+def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT count FROM visitors WHERE date = ? AND ip = ?", (today, ip))
@@ -107,7 +107,7 @@ def _record_visitor_sync(ip: str, today: str) -> Tuple[int, bool]:
         total_visitors = cursor.fetchone()[0]
     return total_visitors, is_new
 
-async def record_visitor(ip: str, today: str) -> Tuple[int, bool]:
+async def record_visitor(ip: str, today: str) -> tuple[int, bool]:
     return await asyncio.to_thread(_record_visitor_sync, ip, today)
 
 def _update_visitor_location_sync(ip: str, today: str, location: str) -> None:
@@ -136,7 +136,7 @@ def _record_click_sync(ip: str, today: str, name: str) -> None:
 async def record_click(ip: str, today: str, name: str) -> None:
     await asyncio.to_thread(_record_click_sync, ip, today, name)
 
-def _get_visitor_stats_sync(today: str) -> Dict[str, Any]:
+def _get_visitor_stats_sync(today: str) -> dict[str, Any]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT ip, count, location, clicks FROM visitors WHERE date = ?", (today,))
@@ -159,10 +159,10 @@ def _get_visitor_stats_sync(today: str) -> Dict[str, Any]:
             "ips": ips
         }
 
-async def get_visitor_stats(today: str) -> Dict[str, Any]:
+async def get_visitor_stats(today: str) -> dict[str, Any]:
     return await asyncio.to_thread(_get_visitor_stats_sync, today)
 
-def _save_news_items_sync(cat_id: str, items: List[Dict[str, Any]], sync_time: float) -> None:
+def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
     with get_db() as conn:
         cursor = conn.cursor()
         now = time.time()
@@ -196,10 +196,10 @@ def _save_news_items_sync(cat_id: str, items: List[Dict[str, Any]], sync_time: f
             )
         """, (cat_id, cat_id))
 
-async def save_news_items(cat_id: str, items: List[Dict[str, Any]], sync_time: float) -> None:
+async def save_news_items(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
     await asyncio.to_thread(_save_news_items_sync, cat_id, items, sync_time)
 
-def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> Tuple[List[Dict[str, Any]], float]:
+def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> tuple[list[dict[str, Any]], float]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -215,10 +215,10 @@ def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> Tuple[List[Dict[str
         last_sync = meta["last_sync"] if meta else 0.0
     return rows, last_sync
 
-async def load_news_by_cat(cat_id: str, limit: int = 300) -> Tuple[List[Dict[str, Any]], float]:
+async def load_news_by_cat(cat_id: str, limit: int = 300) -> tuple[list[dict[str, Any]], float]:
     return await asyncio.to_thread(_load_news_by_cat_sync, cat_id, limit)
 
-def _get_article_sync(cat_id: str, target_id: str) -> Optional[Dict[str, Any]]:
+def _get_article_sync(cat_id: str, target_id: str) -> dict[str, Any] | None:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -230,7 +230,7 @@ def _get_article_sync(cat_id: str, target_id: str) -> Optional[Dict[str, Any]]:
         row = cursor.fetchone()
         return dict(row) if row else None
 
-async def get_article(cat_id: str, target_id: str) -> Optional[Dict[str, Any]]:
+async def get_article(cat_id: str, target_id: str) -> dict[str, Any] | None:
     return await asyncio.to_thread(_get_article_sync, cat_id, target_id)
 
 def _save_article_content_sync(link_hash: str, full_content: str) -> None:
@@ -240,7 +240,7 @@ def _save_article_content_sync(link_hash: str, full_content: str) -> None:
 async def save_article_content(link_hash: str, full_content: str) -> None:
     await asyncio.to_thread(_save_article_content_sync, link_hash, full_content)
 
-def _get_cached_image_sync(url: str) -> Optional[Tuple[bytes, str]]:
+def _get_cached_image_sync(url: str) -> tuple[bytes, str] | None:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT data, content_type FROM image_cache WHERE url = ?", (url,))
@@ -249,7 +249,7 @@ def _get_cached_image_sync(url: str) -> Optional[Tuple[bytes, str]]:
             return row["data"], row["content_type"]
     return None
 
-async def get_cached_image(url: str) -> Optional[Tuple[bytes, str]]:
+async def get_cached_image(url: str) -> tuple[bytes, str] | None:
     return await asyncio.to_thread(_get_cached_image_sync, url)
 
 def _save_cached_image_sync(url: str, data: bytes, content_type: str) -> None:
