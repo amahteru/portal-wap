@@ -1,5 +1,4 @@
 import asyncio
-import calendar
 import hashlib
 import html
 import io
@@ -7,6 +6,7 @@ import logging
 import re
 import time
 import urllib.parse
+import warnings
 from typing import Any
 
 import feedparser
@@ -16,19 +16,20 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 from PIL import Image
 
-Image.MAX_IMAGE_PIXELS = 10000000
-
-from core import db
 from core.http import get_http_client
 from core.ui import render_xhtml
+
+Image.MAX_IMAGE_PIXELS = 10000000
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 logger = logging.getLogger(__name__)
 
 news_router = APIRouter()
 
-full_content_cache = TTLCache(maxsize=200, ttl=86400)
-image_cache = TTLCache(maxsize=500, ttl=86400)
-image_fail_cache = TTLCache(maxsize=500, ttl=1800)
+articles_by_hash: dict[str, dict[str, Any]] = {}
+full_content_cache: TTLCache = TTLCache(maxsize=500, ttl=86400)
+image_cache: TTLCache = TTLCache(maxsize=500, ttl=86400)
+image_fail_cache: TTLCache = TTLCache(maxsize=500, ttl=1800)
 
 feedparser.USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -81,24 +82,15 @@ CACHE_TTL = 600
 news_cache: dict[str, list[dict[str, Any]]] = {cat_id: [] for cat_id in RSS_FEEDS}
 
 
-def serialize_item(item: Any, cat_id: str) -> dict[str, Any]:
+def format_entry(item: Any, cat_id: str) -> dict[str, Any]:
     def get_attr(key: str, default: Any = "") -> Any:
         return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
-
-    raw_pub: Any = get_attr("published_parsed", None)
-    pub_parsed: float | None = None
-    if raw_pub:
-        if isinstance(raw_pub, (int, float)):
-            pub_parsed = float(raw_pub)
-        elif hasattr(raw_pub, "timetuple"):
-            pub_parsed = float(calendar.timegm(raw_pub.timetuple()))
-        elif isinstance(raw_pub, (tuple, time.struct_time)):
-            pub_parsed = float(calendar.timegm(raw_pub))
 
     title = str(get_attr("title", "") or "")
     link = str(get_attr("link", "") or "")
     summary = str(get_attr("summary", "") or get_attr("description", "") or "")
     published = str(get_attr("published", "") or "")
+    published_parsed = get_attr("published_parsed", None)
     link_hash = hashlib.md5(link.encode("utf-8")).hexdigest() if link else ""
 
     return {
@@ -108,29 +100,8 @@ def serialize_item(item: Any, cat_id: str) -> dict[str, Any]:
         "link_hash": link_hash,
         "summary": summary,
         "published": published,
-        "published_parsed": pub_parsed,
+        "published_parsed": published_parsed,
     }
-
-
-def deserialize_item(doc: dict) -> dict:
-    doc_copy = dict(doc)
-    if doc_copy.get("published_parsed") and isinstance(doc_copy["published_parsed"], (int, float)):
-        try:
-            doc_copy["published_parsed"] = time.localtime(doc_copy["published_parsed"])
-        except Exception:
-            pass
-    return doc_copy
-
-
-async def load_all_from_db() -> None:
-    try:
-        for cat_id in RSS_FEEDS:
-            docs = await db.load_news_by_cat(cat_id, limit=1200)
-            if docs:
-                news_cache[cat_id] = [deserialize_item(doc) for doc in docs]
-        logger.info("成功从 SQLite 加载新闻持久化缓存数据")
-    except Exception as e:
-        logger.error(f"从 SQLite 恢复新闻缓存失败: {e}")
 
 
 async def sync_feed(cat_id: str) -> bool:
@@ -153,25 +124,19 @@ async def sync_feed(cat_id: str) -> bool:
             return False
 
         existing_links = {it.get("link", "") for it in current_items}
-        to_save = []
         added_count = 0
 
-        for item in new_entries:
-            s_item = serialize_item(item, cat_id)
-            link = s_item.get("link", "")
+        for entry in new_entries:
+            entry_dict = format_entry(entry, cat_id)
+            link = entry_dict.get("link", "")
             if link and link not in existing_links:
-                parsed_item = deserialize_item(s_item)
-                current_items.insert(added_count, parsed_item)
-                to_save.append(s_item)
+                current_items.insert(added_count, entry_dict)
+                link_hash = entry_dict.get("link_hash")
+                if link_hash:
+                    articles_by_hash[link_hash] = entry_dict
                 added_count += 1
 
-        if to_save:
-            try:
-                await db.save_news_items(cat_id, to_save)
-            except Exception as ex:
-                logger.error(f"SQLite 新闻写入失败 ({cat_id}): {ex}")
-
-        news_cache[cat_id] = current_items[:1200]
+        news_cache[cat_id] = current_items[:300]
         return True
     except Exception as e:
         logger.error(f"同步新闻失败 ({cat_id}): {e}")
@@ -212,14 +177,6 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
 
     full_content: str | None = None
     link_hash = hashlib.md5(item_link.encode("utf-8")).hexdigest()
-    try:
-        article = await db.get_article(link_hash)
-        if article and article.get("full_content"):
-            full_content = article["full_content"]
-            full_content_cache[item_link] = full_content
-            return full_content
-    except Exception as ex:
-        logger.warning(f"读取 SQLite 全文失败: {ex}")
 
     try:
         client = get_http_client()
@@ -299,10 +256,8 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
                 if extracted and len(extracted) > 10:
                     full_content = extracted
                     full_content_cache[item_link] = full_content
-                    try:
-                        await db.save_article_content(link_hash, full_content)
-                    except Exception as ex:
-                        logger.error(f"全文保存至 SQLite 失败: {ex}")
+                    if link_hash in articles_by_hash:
+                        articles_by_hash[link_hash]["full_content"] = full_content
     except Exception as e:
         logger.warning(f"抓取全文失败 ({item_link}): {e}")
 
@@ -466,18 +421,13 @@ async def get_article(
 
     item = None
     if target_id:
-        for it in items:
-            if it.get("link_hash") == target_id:
-                item = it
-                break
-
-    if not item and target_id:
-        try:
-            doc = await db.get_article(target_id)
-            if doc:
-                item = deserialize_item(doc)
-        except Exception as ex:
-            logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
+        item = articles_by_hash.get(target_id)
+        if not item:
+            for it in items:
+                if it.get("link_hash") == target_id:
+                    item = it
+                    articles_by_hash[target_id] = it
+                    break
 
     if not item:
         cat_name = RSS_FEEDS.get(cat, {}).get("name", "要闻")
@@ -499,8 +449,10 @@ async def get_article(
     safe_title = html.escape(title)
 
     full_content = item.get("full_content") or await fetch_article_content(item_link, cat)
-    if full_content and item_link:
-        full_content_cache[item_link] = full_content
+    if full_content:
+        item["full_content"] = full_content
+        if item_link:
+            full_content_cache[item_link] = full_content
     summary = item.get("summary") or item.get("description", "暂无详细内容")
 
     display_content = full_content if full_content else summary
@@ -513,7 +465,7 @@ async def get_article(
         if match:
             display_content = display_content[: match.start()]
 
-        cleaned_lines = []
+        cleaned_lines: list[str] = []
         simple_title = re.sub(r"[^\w]", "", title)
         for line in display_content.split("\n"):
             line_strip = html.unescape(line).strip().replace("\xa0", " ")
@@ -594,7 +546,6 @@ _background_tasks: list[asyncio.Task] = []
 
 
 async def start_news_tasks() -> list[asyncio.Task]:
-    await load_all_from_db()
     t1 = asyncio.create_task(background_refresher())
     _background_tasks.append(t1)
     return [t1]

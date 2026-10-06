@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 weather_router = APIRouter()
 
-weather_cache = TTLCache(maxsize=300, ttl=1800)
-aqi_cache = TTLCache(maxsize=300, ttl=1800)
+weather_cache: TTLCache = TTLCache(maxsize=300, ttl=1800)
+aqi_cache: TTLCache = TTLCache(maxsize=300, ttl=1800)
 
 
 def get_weather_desc(condition_dict: dict) -> str:
@@ -142,10 +142,11 @@ def generate_xhtml_response(request: Request, title: str, body_content: str, sta
 async def weather_show_result(request: Request, city: str):
     city = city.strip()
     safe_city = escape(city)
-
     weather_task = fetch_weather_data(city)
     aqi_task = fetch_aqi_data(city)
-    weather_data, aqi_data = await asyncio.gather(weather_task, aqi_task, return_exceptions=True)
+    gather_res = await asyncio.gather(weather_task, aqi_task, return_exceptions=True)
+    weather_data: Any = gather_res[0]
+    aqi_data: Any = gather_res[1]
 
     if isinstance(weather_data, Exception):
         weather_data = None
@@ -338,7 +339,9 @@ async def weather_future(request: Request, city: str, date: str):
 
     weather_task = fetch_weather_data(city)
     aqi_task = fetch_aqi_data(city)
-    weather_data, aqi_data = await asyncio.gather(weather_task, aqi_task, return_exceptions=True)
+    gather_res = await asyncio.gather(weather_task, aqi_task, return_exceptions=True)
+    weather_data: Any = gather_res[0]
+    aqi_data: Any = gather_res[1]
 
     if isinstance(weather_data, Exception):
         weather_data = None

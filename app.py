@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 
-from core import db
 from core.http import close_http_client, init_http_client
 from core.ui import render_xhtml
 from routers.news import news_router, start_news_tasks, stop_news_tasks
@@ -46,9 +45,22 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "127.0.0.1"
 
 
+_today_visitors: set[str] = set()
+_today_date: str = ""
+
+
+def record_visitor(ip: str, today: str) -> int:
+    global _today_visitors, _today_date
+    if _today_date != today:
+        _today_date = today
+        _today_visitors.clear()
+    if ip:
+        _today_visitors.add(ip.strip())
+    return len(_today_visitors)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await db.init_db()
     await init_http_client()
     await start_news_tasks()
     yield
@@ -66,11 +78,7 @@ app.include_router(news_router, prefix="/news")
 async def index(request: Request):
     today = get_beijing_date()
     client_ip = get_client_ip(request)
-    try:
-        visit_count = await db.record_visitor(client_ip, today)
-    except Exception as e:
-        logger.error(f"记录访客异常: {e}")
-        visit_count = 1
+    visit_count = record_visitor(client_ip, today)
 
     greeting = get_greeting()
     current_year = datetime.now(BEIJING_TZ).year
