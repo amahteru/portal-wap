@@ -49,12 +49,7 @@ def render_xhtml(
 
     rendered = XHTML_SHELL.format(title=escape(title), body=body, extra_css=extra_css)
 
-    resp_headers = {
-        "Connection": "keep-alive",
-        "Keep-Alive": "timeout=15, max=100",
-    }
-    if headers:
-        resp_headers.update(headers)
+    resp_headers = dict(headers) if headers else {}
 
     return Response(
         content=rendered, media_type=f"{media_type}; charset=utf-8", headers=resp_headers, status_code=status_code

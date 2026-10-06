@@ -142,16 +142,7 @@ def generate_xhtml_response(request: Request, title: str, body_content: str, sta
 async def weather_show_result(request: Request, city: str):
     city = city.strip()
     safe_city = escape(city)
-    weather_task = fetch_weather_data(city)
-    aqi_task = fetch_aqi_data(city)
-    gather_res = await asyncio.gather(weather_task, aqi_task, return_exceptions=True)
-    weather_data: Any = gather_res[0]
-    aqi_data: Any = gather_res[1]
-
-    if isinstance(weather_data, Exception):
-        weather_data = None
-    if isinstance(aqi_data, Exception):
-        aqi_data = None
+    weather_data, aqi_data = await asyncio.gather(fetch_weather_data(city), fetch_aqi_data(city))
 
     if (
         not weather_data
@@ -337,16 +328,7 @@ async def weather_future(request: Request, city: str, date: str):
     target_date = date.strip()
     safe_date = escape(target_date)
 
-    weather_task = fetch_weather_data(city)
-    aqi_task = fetch_aqi_data(city)
-    gather_res = await asyncio.gather(weather_task, aqi_task, return_exceptions=True)
-    weather_data: Any = gather_res[0]
-    aqi_data: Any = gather_res[1]
-
-    if isinstance(weather_data, Exception):
-        weather_data = None
-    if isinstance(aqi_data, Exception):
-        aqi_data = None
+    weather_data, aqi_data = await asyncio.gather(fetch_weather_data(city), fetch_aqi_data(city))
 
     if (
         not weather_data

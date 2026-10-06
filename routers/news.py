@@ -6,7 +6,6 @@ import logging
 import re
 import time
 import urllib.parse
-import warnings
 from typing import Any
 
 import feedparser
@@ -18,9 +17,6 @@ from PIL import Image
 
 from core.http import get_http_client
 from core.ui import render_xhtml
-
-Image.MAX_IMAGE_PIXELS = 10000000
-warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -193,18 +189,13 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
                 raw_bytes = b"".join(chunks)
                 enc = "utf-8"
                 lower_head = raw_bytes[:2000].lower()
-                if b"charset=gb2312" in lower_head or b"charset=gbk" in lower_head:
-                    enc = "gbk"
-                elif b"charset=gb18030" in lower_head:
+                if any(c in lower_head for c in (b"charset=gb2312", b"charset=gbk", b"charset=gb18030")):
                     enc = "gb18030"
 
                 try:
                     downloaded = raw_bytes.decode(enc)
                 except UnicodeDecodeError:
-                    try:
-                        downloaded = raw_bytes.decode("gb18030")
-                    except UnicodeDecodeError:
-                        downloaded = raw_bytes.decode("utf-8", errors="ignore")
+                    downloaded = raw_bytes.decode("gb18030" if enc == "utf-8" else "utf-8", errors="ignore")
                 extracted = None
 
                 if "chinanews.com" in item_link:
@@ -411,10 +402,9 @@ async def get_category(request: Request, cat_id: str, page: int = 1):
 async def get_article(
     request: Request,
     cat: str = "importnews",
-    item_id: str | None = None,
     id: str | None = None,
 ):
-    target_id = id or item_id
+    target_id = id
     if cat not in RSS_FEEDS:
         cat = "importnews"
     items = await get_news_items(cat)
@@ -456,8 +446,6 @@ async def get_article(
     summary = item.get("summary") or item.get("description", "暂无详细内容")
 
     display_content = full_content if full_content else summary
-    if not isinstance(display_content, str):
-        display_content = str(display_content)
 
     if full_content:
         noise_pattern = r"新闻精选[：:]|相关阅读|推荐阅读|猜你喜欢|版权声明"

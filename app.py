@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 
-from core.http import close_http_client, init_http_client
+from core.http import close_http_client, get_http_client
 from core.ui import render_xhtml
 from routers.news import news_router, start_news_tasks, stop_news_tasks
 from routers.weather import weather_router
@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
 SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
+HAS_FAVICON = os.path.exists(FAVICON_PATH)
+HAS_SPEEDDIAL = os.path.exists(SPEEDDIAL_PATH)
+STATIC_CACHE_HEADERS = {"Cache-Control": "public, max-age=604800, immutable"}
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -61,7 +64,7 @@ def record_visitor(ip: str, today: str) -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_http_client()
+    get_http_client()
     await start_news_tasks()
     yield
     await stop_news_tasks()
@@ -123,13 +126,13 @@ async def health():
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    if os.path.exists(FAVICON_PATH):
-        return FileResponse(FAVICON_PATH, media_type="image/x-icon")
+    if HAS_FAVICON:
+        return FileResponse(FAVICON_PATH, media_type="image/x-icon", headers=STATIC_CACHE_HEADERS)
     return Response(status_code=404)
 
 
 @app.get("/speeddial-icon.png", include_in_schema=False)
 async def speeddial_icon():
-    if os.path.exists(SPEEDDIAL_PATH):
-        return FileResponse(SPEEDDIAL_PATH, media_type="image/png")
+    if HAS_SPEEDDIAL:
+        return FileResponse(SPEEDDIAL_PATH, media_type="image/png", headers=STATIC_CACHE_HEADERS)
     return Response(status_code=404)

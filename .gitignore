@@ -45,10 +45,7 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
-# Database files
-*.db
-*.db-wal
-*.db-shm
-
 # Tool caches
 .ruff_cache/
+.coverage
+.coverage.*
