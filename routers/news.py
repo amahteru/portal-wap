@@ -16,6 +16,8 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 from PIL import Image
 
+Image.MAX_IMAGE_PIXELS = 10000000
+
 from core import db
 from core.http import get_http_client
 from core.ui import render_xhtml
@@ -344,26 +346,18 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                 try:
 
                     def process_image():
-                        Image.MAX_IMAGE_PIXELS = 10000000
                         img = Image.open(io.BytesIO(img_data))
                         if img.mode in ("RGBA", "P", "LA"):
                             bg = Image.new("RGB", img.size, (255, 255, 255))
-                            if img.mode == "RGBA":
-                                bg.paste(img, mask=img.split()[3])
-                            else:
-                                bg.paste(
-                                    img.convert("RGBA"),
-                                    mask=img.convert("RGBA").split()[3],
-                                )
+                            rgba = img if img.mode == "RGBA" else img.convert("RGBA")
+                            bg.paste(rgba, mask=rgba.split()[3])
                             img = bg
                         elif img.mode != "RGB":
                             img = img.convert("RGB")
                         max_width = 240
                         if img.width > max_width:
                             ratio = max_width / img.width
-                            resample_mode = getattr(
-                                getattr(Image, "Resampling", Image), "LANCZOS", getattr(Image, "ANTIALIAS", 1)
-                            )
+                            resample_mode = Image.Resampling.LANCZOS
                             img = img.resize(
                                 (max_width, int(img.height * ratio)),
                                 resample_mode,

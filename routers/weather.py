@@ -37,29 +37,33 @@ def get_weather_desc(condition_dict: dict) -> str:
     return WEATHER_TRANSLATIONS.get(desc, desc)
 
 
+def get_aqi_level_text(aqi_val: Any) -> str:
+    if aqi_val is None:
+        return "暂无数据"
+    try:
+        aqi = int(aqi_val)
+        if aqi <= 50:
+            level = "优"
+        elif aqi <= 100:
+            level = "良"
+        elif aqi <= 150:
+            level = "轻度污染"
+        elif aqi <= 200:
+            level = "中度污染"
+        elif aqi <= 300:
+            level = "重度污染"
+        else:
+            level = "严重污染"
+        return f"{aqi} ({level})"
+    except (ValueError, TypeError):
+        return "暂无数据"
+
+
 def format_aqi(aqi_data: Any) -> str:
     if not aqi_data:
         return "暂无数据"
     aqi_val = aqi_data.get("aqi") if isinstance(aqi_data, dict) else aqi_data
-    if aqi_val is not None:
-        try:
-            aqi = int(aqi_val)
-            if aqi <= 50:
-                level = "优"
-            elif aqi <= 100:
-                level = "良"
-            elif aqi <= 150:
-                level = "轻度污染"
-            elif aqi <= 200:
-                level = "中度污染"
-            elif aqi <= 300:
-                level = "重度污染"
-            else:
-                level = "严重污染"
-            return f"{aqi} ({level})"
-        except (ValueError, TypeError):
-            pass
-    return "暂无数据"
+    return get_aqi_level_text(aqi_val)
 
 
 def format_future_aqi(aqi_data: Any, target_date: str) -> str:
@@ -70,22 +74,7 @@ def format_future_aqi(aqi_data: Any, target_date: str) -> str:
         pm25_forecasts = forecast_daily.get("pm25", [])
         for day_data in pm25_forecasts:
             if day_data.get("day") == target_date:
-                aqi_val = day_data.get("avg")
-                if aqi_val is not None:
-                    aqi = int(aqi_val)
-                    if aqi <= 50:
-                        level = "优"
-                    elif aqi <= 100:
-                        level = "良"
-                    elif aqi <= 150:
-                        level = "轻度污染"
-                    elif aqi <= 200:
-                        level = "中度污染"
-                    elif aqi <= 300:
-                        level = "重度污染"
-                    else:
-                        level = "严重污染"
-                    return f"{aqi} ({level})"
+                return get_aqi_level_text(day_data.get("avg"))
     except Exception:
         pass
     return "暂无数据"
