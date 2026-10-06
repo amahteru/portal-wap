@@ -281,7 +281,7 @@ async def weather_home(
     if clear != "1" and saved_cookie and not city and not prov:
         saved_city = urllib.parse.unquote(saved_cookie)
         if saved_city:
-            return RedirectResponse(url=f"/weather?city={urllib.parse.quote(saved_city)}", status_code=302)
+            return await weather_show_result(request, saved_city)
 
     if city:
         return await weather_show_result(request, city)

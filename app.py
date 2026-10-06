@@ -108,16 +108,16 @@ async def index(request: Request):
             </div>
             <hr/>
             <b>:: 社交互动 ::</b>
-            <div class="item even">[1] <a href="/redirect?url=//qq.ekiz.top&amp;name=QQ群互通" accesskey="2">QQ群互通</a></div>
-            <div class="item odd">[2] <a href="/redirect?url=//qq.ekiz.top/wml&amp;name=互通(WAP版)" accesskey="3">互通(WAP版)</a></div>
+            <div class="item even">[1] <a href="/redirect?url=//qq.ekiz.top" accesskey="2">QQ群互通</a></div>
+            <div class="item odd">[2] <a href="/redirect?url=//qq.ekiz.top/wml" accesskey="3">互通(WAP版)</a></div>
             <hr/>
             <b>:: 资讯生活 ::</b>
-            <div class="item odd">[3] <a href="/redirect?url=/news&amp;name=新闻网站" accesskey="4">新闻网站</a></div>
-            <div class="item even">[4] <a href="/redirect?url=/weather&amp;name=天气预报" accesskey="5">天气预报</a></div>
+            <div class="item odd">[3] <a href="/news/category/importnews" accesskey="4">新闻网站</a></div>
+            <div class="item even">[4] <a href="/weather" accesskey="5">天气预报</a></div>
             <hr/>
             <b>:: 工具娱乐 ::</b>
-            <div class="item odd">[5] <a href="/redirect?url=//ai.ekiz.top&amp;name=AI普通版(账密a)" accesskey="9">AI普通版</a></div>
-            <div class="item even">[6] <a href="/redirect?url=//ai.ekiz.top/nokia&amp;name=AI(WAP版)" accesskey="0">AI(WAP版)</a></div>
+            <div class="item odd">[5] <a href="/redirect?url=//ai.ekiz.top" accesskey="9">AI普通版</a></div>
+            <div class="item even">[6] <a href="/redirect?url=//ai.ekiz.top/nokia" accesskey="0">AI(WAP版)</a></div>
         </div>
         <div class="nav">
             浙ICP备08012345号-1<br/>
@@ -128,7 +128,7 @@ async def index(request: Request):
 
 
 @app.get("/redirect")
-async def redirect_to(request: Request, url: str, name: str | None = None):
+async def redirect_to(request: Request, url: str):
     if not is_safe_redirect_url(url):
         client_ip = get_client_ip(request)
         logger.warning(f"拦截未授权的重定向目标: {url} 来自 IP: {client_ip}")

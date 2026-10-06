@@ -164,6 +164,22 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]]) -> None:
             rows_to_insert,
         )
 
+        cursor.execute("SELECT COUNT(*) FROM news_articles WHERE cat_id = ?", (cat_id,))
+        count_row = cursor.fetchone()
+        if count_row and count_row[0] > 1200:
+            cursor.execute(
+                """
+                DELETE FROM news_articles
+                WHERE cat_id = ? AND link_hash IN (
+                    SELECT link_hash FROM news_articles
+                    WHERE cat_id = ?
+                    ORDER BY published_parsed ASC, created_at ASC
+                    LIMIT 200
+                )
+            """,
+                (cat_id, cat_id),
+            )
+
 
 async def save_news_items(cat_id: str, items: list[dict[str, Any]]) -> None:
     await asyncio.to_thread(_save_news_items_sync, cat_id, items)
