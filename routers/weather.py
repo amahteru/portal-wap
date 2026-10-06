@@ -82,10 +82,9 @@ def format_future_aqi(aqi_data: Any, target_date: str) -> str:
 
 async def fetch_weather_data(city: str) -> dict | None:
     cache_key = city.strip()
-    if cache_key in weather_cache:
-        cached = weather_cache.get(cache_key)
-        if isinstance(cached, dict):
-            return cached
+    cached = weather_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
 
     url = f"https://wttr.in/{urllib.parse.quote(cache_key)}?format=j1&lang=zh-cn"
     headers = {
@@ -106,10 +105,9 @@ async def fetch_weather_data(city: str) -> dict | None:
 
 async def fetch_aqi_data(city: str) -> dict | None:
     cache_key = city.strip()
-    if cache_key in aqi_cache:
-        cached = aqi_cache.get(cache_key)
-        if isinstance(cached, dict):
-            return cached
+    cached = aqi_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
 
     token = os.environ.get("WAQI_TOKEN", "").strip()
     if not token:

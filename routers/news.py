@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 news_router = APIRouter()
 
 full_content_cache = TTLCache(maxsize=200, ttl=86400)
-image_cache = TTLCache(maxsize=300, ttl=86400)
-image_fail_cache = TTLCache(maxsize=300, ttl=1800)
+image_cache = TTLCache(maxsize=500, ttl=86400)
+image_fail_cache = TTLCache(maxsize=500, ttl=1800)
 
 feedparser.USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -314,19 +314,9 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
         return None
     if url in image_fail_cache:
         return None
-    if url in image_cache:
-        cached_img = image_cache.get(url)
-        if isinstance(cached_img, bytes):
-            return cached_img
-
-    try:
-        cached = await db.get_cached_image(url)
-        if cached:
-            img_data, _ = cached
-            image_cache[url] = img_data
-            return img_data
-    except Exception as e:
-        logger.warning(f"SQLite 图片读取失败: {e}")
+    cached_img = image_cache.get(url)
+    if isinstance(cached_img, bytes):
+        return cached_img
 
     try:
         client = get_http_client()
@@ -372,10 +362,6 @@ async def fetch_and_cache_image(url: str) -> bytes | None:
                     return None
 
                 image_cache[url] = img_data
-                try:
-                    await db.save_cached_image(url, img_data, "image/jpeg")
-                except Exception as e:
-                    logger.error(f"SQLite 图片保存失败: {e}")
                 return img_data
             else:
                 image_fail_cache[url] = True
