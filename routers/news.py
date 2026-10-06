@@ -1,11 +1,12 @@
 import asyncio
+import calendar
 import hashlib
 import html
 import io
 import logging
 import re
-import time
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import feedparser
@@ -18,6 +19,7 @@ from PIL import Image
 from core.http import get_http_client
 from core.ui import render_xhtml
 
+BEIJING_TZ = timezone(timedelta(hours=8))
 logger = logging.getLogger(__name__)
 
 news_router = APIRouter()
@@ -490,7 +492,13 @@ async def get_article(
     pub_str = item.get("published", "暂无时间信息")
     if pub_parsed:
         try:
-            pub_date = time.strftime("%Y-%m-%d %H:%M", pub_parsed)
+            if isinstance(pub_parsed, (int, float)):
+                epoch = float(pub_parsed)
+            elif hasattr(pub_parsed, "timetuple"):
+                epoch = float(calendar.timegm(pub_parsed.timetuple()))
+            else:
+                epoch = float(calendar.timegm(pub_parsed))
+            pub_date = datetime.fromtimestamp(epoch, tz=BEIJING_TZ).strftime("%Y-%m-%d %H:%M")
         except Exception:
             pub_date = pub_str
     else:
