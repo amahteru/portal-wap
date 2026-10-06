@@ -21,7 +21,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
 SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 
-ALLOWED_REDIRECT_DOMAINS = {"qq.ekiz.top", "ai.ekiz.top", "wap.baidu.com"}
+ALLOWED_REDIRECT_DOMAINS = {"qq.ekiz.top", "ai.ekiz.top"}
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 
@@ -108,16 +108,16 @@ async def index(request: Request):
             </div>
             <hr/>
             <b>:: 社交互动 ::</b>
-            <div class="item even">[1] <a href="/redirect?url=//qq.ekiz.top" accesskey="2">QQ群互通</a></div>
-            <div class="item odd">[2] <a href="/redirect?url=//qq.ekiz.top/wml" accesskey="3">互通(WAP版)</a></div>
+            <div class="item even">[1] <a href="//qq.ekiz.top" accesskey="2">QQ群互通</a></div>
+            <div class="item odd">[2] <a href="//qq.ekiz.top/wml" accesskey="3">互通(WAP版)</a></div>
             <hr/>
             <b>:: 资讯生活 ::</b>
             <div class="item odd">[3] <a href="/news/category/importnews" accesskey="4">新闻网站</a></div>
             <div class="item even">[4] <a href="/weather" accesskey="5">天气预报</a></div>
             <hr/>
             <b>:: 工具娱乐 ::</b>
-            <div class="item odd">[5] <a href="/redirect?url=//ai.ekiz.top" accesskey="9">AI普通版</a></div>
-            <div class="item even">[6] <a href="/redirect?url=//ai.ekiz.top/nokia" accesskey="0">AI(WAP版)</a></div>
+            <div class="item odd">[5] <a href="//ai.ekiz.top" accesskey="9">AI普通版</a></div>
+            <div class="item even">[6] <a href="//ai.ekiz.top/nokia" accesskey="0">AI(WAP版)</a></div>
         </div>
         <div class="nav">
             浙ICP备08012345号-1<br/>

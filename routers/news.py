@@ -72,38 +72,24 @@ CACHE_TTL = 600
 news_cache: dict[str, list[dict[str, Any]]] = {cat_id: [] for cat_id in RSS_FEEDS}
 
 
-def serialize_item(item: Any, cat_id: str) -> dict:
-    pub_parsed = None
-    if isinstance(item, dict):
-        if item.get("published_parsed"):
-            pub_parsed = item["published_parsed"]
-            if isinstance(pub_parsed, (int, float)):
-                pub_parsed = float(pub_parsed)
-            elif hasattr(pub_parsed, "timetuple"):
-                pub_parsed = float(calendar.timegm(pub_parsed.timetuple()))
-            elif isinstance(pub_parsed, (tuple, time.struct_time)):
-                pub_parsed = float(calendar.timegm(pub_parsed))
-        title = item.get("title", "")
-        link = item.get("link", "")
-        summary = item.get("summary", item.get("description", ""))
-        published = item.get("published", "")
-    else:
-        if hasattr(item, "published_parsed") and item.published_parsed:
-            try:
-                st = item.published_parsed
-                if isinstance(st, (int, float)):
-                    pub_parsed = float(st)
-                elif hasattr(st, "timetuple"):
-                    pub_parsed = float(calendar.timegm(st.timetuple()))
-                elif isinstance(st, (tuple, time.struct_time)):
-                    pub_parsed = float(calendar.timegm(st))
-            except Exception:
-                pub_parsed = None
-        title = getattr(item, "title", "")
-        link = getattr(item, "link", "")
-        summary = getattr(item, "summary", getattr(item, "description", ""))
-        published = getattr(item, "published", "")
+def serialize_item(item: Any, cat_id: str) -> dict[str, Any]:
+    def get_attr(key: str, default: Any = "") -> Any:
+        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
 
+    raw_pub: Any = get_attr("published_parsed", None)
+    pub_parsed: float | None = None
+    if raw_pub:
+        if isinstance(raw_pub, (int, float)):
+            pub_parsed = float(raw_pub)
+        elif hasattr(raw_pub, "timetuple"):
+            pub_parsed = float(calendar.timegm(raw_pub.timetuple()))
+        elif isinstance(raw_pub, (tuple, time.struct_time)):
+            pub_parsed = float(calendar.timegm(raw_pub))
+
+    title = str(get_attr("title", "") or "")
+    link = str(get_attr("link", "") or "")
+    summary = str(get_attr("summary", "") or get_attr("description", "") or "")
+    published = str(get_attr("published", "") or "")
     link_hash = hashlib.md5(link.encode("utf-8")).hexdigest() if link else ""
 
     return {
@@ -618,7 +604,6 @@ async def get_article(
 
 
 @news_router.get("/image-proxy")
-@news_router.get("/proxy-image")
 async def image_proxy(url: str, sign: str = ""):
     if not sign or not verify_url(url, sign):
         return Response(content=b"Forbidden", status_code=403, media_type="text/plain")
