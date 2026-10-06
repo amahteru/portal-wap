@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import hashlib
 import hmac
 import html
@@ -76,8 +77,12 @@ def serialize_item(item: Any, cat_id: str) -> dict:
     if isinstance(item, dict):
         if item.get("published_parsed"):
             pub_parsed = item["published_parsed"]
-            if hasattr(pub_parsed, "timetuple") or isinstance(pub_parsed, (tuple, time.struct_time)):
-                pub_parsed = time.mktime(pub_parsed)
+            if isinstance(pub_parsed, (int, float)):
+                pub_parsed = float(pub_parsed)
+            elif hasattr(pub_parsed, "timetuple"):
+                pub_parsed = float(calendar.timegm(pub_parsed.timetuple()))
+            elif isinstance(pub_parsed, (tuple, time.struct_time)):
+                pub_parsed = float(calendar.timegm(pub_parsed))
         title = item.get("title", "")
         link = item.get("link", "")
         summary = item.get("summary", item.get("description", ""))
@@ -85,7 +90,13 @@ def serialize_item(item: Any, cat_id: str) -> dict:
     else:
         if hasattr(item, "published_parsed") and item.published_parsed:
             try:
-                pub_parsed = time.mktime(item.published_parsed)
+                st = item.published_parsed
+                if isinstance(st, (int, float)):
+                    pub_parsed = float(st)
+                elif hasattr(st, "timetuple"):
+                    pub_parsed = float(calendar.timegm(st.timetuple()))
+                elif isinstance(st, (tuple, time.struct_time)):
+                    pub_parsed = float(calendar.timegm(st))
             except Exception:
                 pub_parsed = None
         title = getattr(item, "title", "")

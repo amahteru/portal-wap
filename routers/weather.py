@@ -38,11 +38,8 @@ def get_weather_desc(condition_dict: dict) -> str:
 
 
 def format_aqi(aqi_data: Any) -> str:
-    token = os.environ.get("WAQI_TOKEN", "").strip()
-    if not token:
-        return "未配置Token"
     if not aqi_data:
-        return "查询超时或不可用"
+        return "暂无数据"
     aqi_val = aqi_data.get("aqi") if isinstance(aqi_data, dict) else aqi_data
     if aqi_val is not None:
         try:
@@ -62,15 +59,12 @@ def format_aqi(aqi_data: Any) -> str:
             return f"{aqi} ({level})"
         except (ValueError, TypeError):
             pass
-    return "未知"
+    return "暂无数据"
 
 
 def format_future_aqi(aqi_data: Any, target_date: str) -> str:
-    token = os.environ.get("WAQI_TOKEN", "").strip()
-    if not token:
-        return "未配置Token"
     if not aqi_data or not isinstance(aqi_data, dict):
-        return "暂无预报"
+        return "暂无数据"
     try:
         forecast_daily = aqi_data.get("forecast", {}).get("daily", {})
         pm25_forecasts = forecast_daily.get("pm25", [])
@@ -94,7 +88,7 @@ def format_future_aqi(aqi_data: Any, target_date: str) -> str:
                     return f"{aqi} ({level})"
     except Exception:
         pass
-    return "暂无预报"
+    return "暂无数据"
 
 
 async def fetch_weather_data(city: str) -> dict | None:
