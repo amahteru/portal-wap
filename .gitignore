@@ -45,11 +45,10 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
-# Database files & Secrets
+# Database files
 *.db
 *.db-wal
 *.db-shm
-.secret_key
 
 # Tool caches
 .ruff_cache/

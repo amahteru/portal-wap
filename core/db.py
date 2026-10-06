@@ -80,7 +80,6 @@ def _init_db_sync() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_news_cat_pub_created ON news_articles(cat_id, published_parsed DESC, created_at DESC);"
         )
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_link ON news_articles(link);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_link_hash ON news_articles(link_hash);")
 
         cursor.execute("""
@@ -207,19 +206,6 @@ def _get_article_sync(target_id: str) -> dict[str, Any] | None:
             SELECT link_hash, cat_id, title, link, summary, published, published_parsed, full_content
             FROM news_articles
             WHERE link_hash = ?
-            LIMIT 1
-        """,
-            (target_id,),
-        )
-        row = cursor.fetchone()
-        if row:
-            return dict(row)
-
-        cursor.execute(
-            """
-            SELECT link_hash, cat_id, title, link, summary, published, published_parsed, full_content
-            FROM news_articles
-            WHERE link = ?
             LIMIT 1
         """,
             (target_id,),

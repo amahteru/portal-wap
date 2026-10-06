@@ -37,7 +37,6 @@ feedparser.USER_AGENT = (
 ALLOWED_IMAGE_DOMAINS = {
     "chinanews.com.cn",
     "chinanews.com",
-    "solidot.org",
 }
 
 
@@ -473,9 +472,8 @@ async def get_article(
     cat: str = "importnews",
     item_id: str | None = None,
     id: str | None = None,
-    url: str | None = None,
 ):
-    target_id = item_id or id
+    target_id = id or item_id
     if cat not in RSS_FEEDS:
         cat = "importnews"
     items = await get_news_items(cat)
@@ -483,32 +481,17 @@ async def get_article(
     item = None
     if target_id:
         for it in items:
-            link = it.get("link", "")
-            if it.get("link_hash") == target_id or (
-                link and hashlib.md5(link.encode("utf-8")).hexdigest() == target_id
-            ):
-                item = it
-                break
-        if not item and target_id.isdigit():
-            idx = int(target_id)
-            if 0 <= idx < len(items):
-                item = items[idx]
-
-    if not item and url:
-        for it in items:
-            if it.get("link") == url:
+            if it.get("link_hash") == target_id:
                 item = it
                 break
 
-    if not item and (target_id or url):
-        query_key = target_id or url
-        if query_key:
-            try:
-                doc = await db.get_article(query_key)
-                if doc:
-                    item = deserialize_item(doc)
-            except Exception as ex:
-                logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
+    if not item and target_id:
+        try:
+            doc = await db.get_article(target_id)
+            if doc:
+                item = deserialize_item(doc)
+        except Exception as ex:
+            logger.warning(f"从 SQLite 回源查询新闻失败: {ex}")
 
     if not item:
         cat_name = RSS_FEEDS.get(cat, {}).get("name", "要闻")

@@ -17,4 +17,3 @@ docs
 *.db
 *.db-wal
 *.db-shm
-.secret_key
