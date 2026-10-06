@@ -1,6 +1,5 @@
 import logging
 import os
-import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -21,25 +20,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON_PATH = os.path.join(BASE_DIR, "favicon.ico")
 SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 
-ALLOWED_REDIRECT_DOMAINS = {"qq.ekiz.top", "ai.ekiz.top"}
 BEIJING_TZ = timezone(timedelta(hours=8))
-
-
-def is_safe_redirect_url(target: str) -> bool:
-    if not target:
-        return False
-    if "\\" in target or "\t" in target or "\r" in target or "\n" in target:
-        return False
-    if target.startswith("/") and not target.startswith("//"):
-        return True
-    url_to_parse = f"http:{target}" if target.startswith("//") else target
-    try:
-        parsed = urllib.parse.urlparse(url_to_parse)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        return parsed.hostname in ALLOWED_REDIRECT_DOMAINS
-    except Exception:
-        return False
 
 
 def get_beijing_date() -> str:
@@ -125,16 +106,6 @@ async def index(request: Request):
         </div>
     """
     return render_xhtml(request, "WAP导航页", body)
-
-
-@app.get("/redirect")
-async def redirect_to(request: Request, url: str):
-    if not is_safe_redirect_url(url):
-        client_ip = get_client_ip(request)
-        logger.warning(f"拦截未授权的重定向目标: {url} 来自 IP: {client_ip}")
-        return RedirectResponse(url="/", status_code=302)
-
-    return RedirectResponse(url=url, status_code=302)
 
 
 @app.get("/health")

@@ -1,7 +1,6 @@
 import asyncio
 import calendar
 import hashlib
-import hmac
 import html
 import io
 import logging
@@ -18,7 +17,6 @@ from fastapi.responses import RedirectResponse
 from PIL import Image
 
 from core import db
-from core.db import get_secret_key
 from core.http import get_http_client
 from core.ui import render_xhtml
 
@@ -34,17 +32,27 @@ feedparser.USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+ALLOWED_IMAGE_DOMAINS = {
+    "chinanews.com.cn",
+    "chinanews.com",
+    "solidot.org",
+}
 
-def sign_url(url: str) -> str:
-    key = get_secret_key()
-    return hmac.new(key, url.encode("utf-8"), hashlib.sha256).hexdigest()
 
-
-def verify_url(url: str, sign: str) -> bool:
-    if not url or not sign:
+def is_allowed_image_url(url: str) -> bool:
+    if not url:
         return False
-    expected_sign = sign_url(url)
-    return hmac.compare_digest(expected_sign, sign)
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        return any(
+            hostname == domain or hostname.endswith("." + domain)
+            for domain in ALLOWED_IMAGE_DOMAINS
+        )
+    except Exception:
+        return False
 
 
 RSS_FEEDS = {
@@ -100,7 +108,6 @@ def serialize_item(item: Any, cat_id: str) -> dict[str, Any]:
         "summary": summary,
         "published": published,
         "published_parsed": pub_parsed,
-        "fetch_time": time.time(),
     }
 
 
@@ -117,7 +124,7 @@ def deserialize_item(doc: dict) -> dict:
 async def load_all_from_db() -> None:
     try:
         for cat_id in RSS_FEEDS:
-            docs = await db.load_news_by_cat(cat_id, limit=300)
+            docs = await db.load_news_by_cat(cat_id, limit=1200)
             if docs:
                 news_cache[cat_id] = [deserialize_item(doc) for doc in docs]
         logger.info("成功从 SQLite 加载新闻持久化缓存数据")
@@ -163,7 +170,7 @@ async def sync_feed(cat_id: str) -> bool:
             except Exception as ex:
                 logger.error(f"SQLite 新闻写入失败 ({cat_id}): {ex}")
 
-        news_cache[cat_id] = current_items[:300]
+        news_cache[cat_id] = current_items[:1200]
         return True
     except Exception as e:
         logger.error(f"同步新闻失败 ({cat_id}): {e}")
@@ -302,7 +309,7 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
 
 
 async def fetch_and_cache_image(url: str) -> bytes | None:
-    if not url or not url.startswith(("http://", "https://")):
+    if not is_allowed_image_url(url):
         return None
     if url in image_fail_cache:
         return None
@@ -564,9 +571,8 @@ async def get_article(
         def img_replacer(match):
             img_url = html.unescape(match.group(1))
             safe_img_url = urllib.parse.quote(img_url)
-            sign = sign_url(img_url)
             return (
-                f'<br/><div align="center"><img src="/news/image-proxy?url={safe_img_url}&amp;sign={sign}" '
+                f'<br/><div align="center"><img src="/news/image-proxy?url={safe_img_url}" '
                 f'alt="新闻图片" style="max-width: 98%; margin: 2px 0; border: 0;" /></div>'
             )
 
@@ -585,7 +591,8 @@ async def get_article(
     else:
         pub_date = pub_str
 
-    cat_name = RSS_FEEDS.get(cat, {}).get("name", "要闻")
+    actual_cat = item.get("cat_id") or cat
+    cat_name = RSS_FEEDS.get(actual_cat, {}).get("name", "要闻")
 
     body_content = f"""
     <div class="header">新闻详情</div>
@@ -596,7 +603,7 @@ async def get_article(
         {safe_desc}<br/>
     </div>
     <div class="nav">
-        <a href="/news/category/{cat}">[返回{cat_name}频道]</a><br/>
+        <a href="/news/category/{actual_cat}">[返回{cat_name}频道]</a><br/>
         <a href="/">[返回门户首页]</a>
     </div>
     """
@@ -604,8 +611,8 @@ async def get_article(
 
 
 @news_router.get("/image-proxy")
-async def image_proxy(url: str, sign: str = ""):
-    if not sign or not verify_url(url, sign):
+async def image_proxy(url: str):
+    if not is_allowed_image_url(url):
         return Response(content=b"Forbidden", status_code=403, media_type="text/plain")
 
     img_data = await fetch_and_cache_image(url)

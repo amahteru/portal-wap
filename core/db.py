@@ -33,12 +33,6 @@ def _resolve_data_dir() -> str:
 DATA_DIR = _resolve_data_dir()
 DB_PATH = os.path.join(DATA_DIR, "portal.db")
 
-INTERNAL_SECRET_KEY = b"portal_wap_hardcoded_hmac_secret_key_v1"
-
-
-def get_secret_key() -> bytes:
-    return INTERNAL_SECRET_KEY
-
 
 @contextmanager
 def get_db():
@@ -77,7 +71,6 @@ def _init_db_sync() -> None:
                 summary TEXT,
                 published TEXT,
                 published_parsed REAL,
-                fetch_time REAL,
                 full_content TEXT,
                 created_at REAL
             );
@@ -144,7 +137,6 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]]) -> None:
                 it.get("summary", ""),
                 it.get("published", ""),
                 it.get("published_parsed"),
-                it.get("fetch_time", now),
                 now,
             )
             for it in items
@@ -152,14 +144,13 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]]) -> None:
         cursor.executemany(
             """
             INSERT INTO news_articles (
-                link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                link_hash, cat_id, title, link, summary, published, published_parsed, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(link_hash) DO UPDATE SET
                 title = excluded.title,
                 summary = excluded.summary,
                 published = excluded.published,
-                published_parsed = excluded.published_parsed,
-                fetch_time = excluded.fetch_time
+                published_parsed = excluded.published_parsed
         """,
             rows_to_insert,
         )
@@ -185,12 +176,12 @@ async def save_news_items(cat_id: str, items: list[dict[str, Any]]) -> None:
     await asyncio.to_thread(_save_news_items_sync, cat_id, items)
 
 
-def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> list[dict[str, Any]]:
+def _load_news_by_cat_sync(cat_id: str, limit: int = 1200) -> list[dict[str, Any]]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time
+            SELECT link_hash, cat_id, title, link, summary, published, published_parsed
             FROM news_articles
             WHERE cat_id = ?
             ORDER BY published_parsed DESC, created_at DESC
@@ -201,7 +192,7 @@ def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> list[dict[str, Any]
         return [dict(r) for r in cursor.fetchall()]
 
 
-async def load_news_by_cat(cat_id: str, limit: int = 300) -> list[dict[str, Any]]:
+async def load_news_by_cat(cat_id: str, limit: int = 1200) -> list[dict[str, Any]]:
     return await asyncio.to_thread(_load_news_by_cat_sync, cat_id, limit)
 
 
@@ -210,7 +201,7 @@ def _get_article_sync(target_id: str) -> dict[str, Any] | None:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time, full_content
+            SELECT link_hash, cat_id, title, link, summary, published, published_parsed, full_content
             FROM news_articles
             WHERE link_hash = ?
             LIMIT 1
@@ -223,7 +214,7 @@ def _get_article_sync(target_id: str) -> dict[str, Any] | None:
 
         cursor.execute(
             """
-            SELECT link_hash, cat_id, title, link, summary, published, published_parsed, fetch_time, full_content
+            SELECT link_hash, cat_id, title, link, summary, published, published_parsed, full_content
             FROM news_articles
             WHERE link = ?
             LIMIT 1
