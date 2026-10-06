@@ -64,7 +64,7 @@ def _init_db_sync() -> None:
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS news_articles (
-                link_hash TEXT PRIMARY KEY,
+                link_hash TEXT NOT NULL,
                 cat_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 link TEXT NOT NULL,
@@ -72,13 +72,16 @@ def _init_db_sync() -> None:
                 published TEXT,
                 published_parsed REAL,
                 full_content TEXT,
-                created_at REAL
+                created_at REAL,
+                PRIMARY KEY (cat_id, link_hash)
             );
         """)
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_news_cat_pub_created ON news_articles(cat_id, published_parsed DESC, created_at DESC);"
         )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_link ON news_articles(link);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_link_hash ON news_articles(link_hash);")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS image_cache (
@@ -146,7 +149,7 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]]) -> None:
             INSERT INTO news_articles (
                 link_hash, cat_id, title, link, summary, published, published_parsed, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(link_hash) DO UPDATE SET
+            ON CONFLICT(cat_id, link_hash) DO UPDATE SET
                 title = excluded.title,
                 summary = excluded.summary,
                 published = excluded.published,

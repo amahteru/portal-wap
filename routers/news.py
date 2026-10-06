@@ -529,7 +529,9 @@ async def get_article(
     title = item.get("title", "无标题")
     safe_title = html.escape(title)
 
-    full_content = await fetch_article_content(item_link, cat) or item.get("full_content")
+    full_content = item.get("full_content") or await fetch_article_content(item_link, cat)
+    if full_content and item_link:
+        full_content_cache[item_link] = full_content
     summary = item.get("summary") or item.get("description", "暂无详细内容")
 
     display_content = full_content if full_content else summary
@@ -585,7 +587,7 @@ async def get_article(
     else:
         pub_date = pub_str
 
-    actual_cat = item.get("cat_id") or cat
+    actual_cat = cat if cat in RSS_FEEDS else (item.get("cat_id") or "importnews")
     cat_name = RSS_FEEDS.get(actual_cat, {}).get("name", "要闻")
 
     body_content = f"""
