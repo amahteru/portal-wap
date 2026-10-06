@@ -86,7 +86,7 @@ async def index(request: Request):
     today = get_beijing_date()
     client_ip = get_client_ip(request)
     try:
-        visit_count, _ = await db.record_visitor(client_ip, today)
+        visit_count = await db.record_visitor(client_ip, today)
     except Exception as e:
         logger.error(f"记录访客异常: {e}")
         visit_count = 1

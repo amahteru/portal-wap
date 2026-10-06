@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import sqlite3
@@ -8,6 +9,13 @@ from contextlib import contextmanager
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def is_public_ip(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return False
 
 
 def _resolve_data_dir() -> str:
@@ -106,28 +114,22 @@ async def init_db() -> None:
     await asyncio.to_thread(_init_db_sync)
 
 
-def _record_visitor_sync(ip: str, today: str) -> tuple[int, bool]:
+def _record_visitor_sync(ip: str, today: str) -> int:
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT count FROM visitors WHERE date = ? AND ip = ?", (today, ip))
-        row = cursor.fetchone()
-        is_new = row is None
-        if is_new:
+        if is_public_ip(ip):
             cursor.execute(
-                "INSERT INTO visitors (date, ip, count, location) VALUES (?, ?, 1, '')",
-                (today, ip),
-            )
-        else:
-            cursor.execute(
-                "UPDATE visitors SET count = count + 1 WHERE date = ? AND ip = ?",
+                """
+                INSERT INTO visitors (date, ip, count, location) VALUES (?, ?, 1, '')
+                ON CONFLICT(date, ip) DO UPDATE SET count = count + 1
+                """,
                 (today, ip),
             )
         cursor.execute("SELECT COUNT(*) FROM visitors WHERE date = ?", (today,))
-        total_unique = cursor.fetchone()[0]
-        return total_unique, is_new
+        return cursor.fetchone()[0]
 
 
-async def record_visitor(ip: str, today: str) -> tuple[int, bool]:
+async def record_visitor(ip: str, today: str) -> int:
     return await asyncio.to_thread(_record_visitor_sync, ip, today)
 
 
