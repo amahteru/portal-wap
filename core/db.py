@@ -101,8 +101,6 @@ def _init_db_sync() -> None:
             CREATE TABLE IF NOT EXISTS visitors (
                 date TEXT NOT NULL,
                 ip TEXT NOT NULL,
-                count INTEGER DEFAULT 1,
-                location TEXT DEFAULT '',
                 PRIMARY KEY (date, ip)
             );
         """)
@@ -120,8 +118,8 @@ def _record_visitor_sync(ip: str, today: str) -> int:
         if is_public_ip(ip):
             cursor.execute(
                 """
-                INSERT INTO visitors (date, ip, count, location) VALUES (?, ?, 1, '')
-                ON CONFLICT(date, ip) DO UPDATE SET count = count + 1
+                INSERT INTO visitors (date, ip) VALUES (?, ?)
+                ON CONFLICT(date, ip) DO NOTHING
                 """,
                 (today, ip),
             )
@@ -133,7 +131,7 @@ async def record_visitor(ip: str, today: str) -> int:
     return await asyncio.to_thread(_record_visitor_sync, ip, today)
 
 
-def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
+def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]]) -> None:
     with get_db() as conn:
         cursor = conn.cursor()
         now = time.time()
@@ -167,8 +165,8 @@ def _save_news_items_sync(cat_id: str, items: list[dict[str, Any]], sync_time: f
         )
 
 
-async def save_news_items(cat_id: str, items: list[dict[str, Any]], sync_time: float) -> None:
-    await asyncio.to_thread(_save_news_items_sync, cat_id, items, sync_time)
+async def save_news_items(cat_id: str, items: list[dict[str, Any]]) -> None:
+    await asyncio.to_thread(_save_news_items_sync, cat_id, items)
 
 
 def _load_news_by_cat_sync(cat_id: str, limit: int = 300) -> list[dict[str, Any]]:
@@ -191,7 +189,7 @@ async def load_news_by_cat(cat_id: str, limit: int = 300) -> list[dict[str, Any]
     return await asyncio.to_thread(_load_news_by_cat_sync, cat_id, limit)
 
 
-def _get_article_sync(cat_id: str, target_id: str) -> dict[str, Any] | None:
+def _get_article_sync(target_id: str) -> dict[str, Any] | None:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -220,8 +218,8 @@ def _get_article_sync(cat_id: str, target_id: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-async def get_article(cat_id: str, target_id: str) -> dict[str, Any] | None:
-    return await asyncio.to_thread(_get_article_sync, cat_id, target_id)
+async def get_article(target_id: str) -> dict[str, Any] | None:
+    return await asyncio.to_thread(_get_article_sync, target_id)
 
 
 def _save_article_content_sync(link_hash: str, full_content: str) -> None:

@@ -144,7 +144,6 @@ async def sync_feed(cat_id: str) -> bool:
         return False
 
     current_items = news_cache[cat_id]
-    current_time = time.time()
 
     try:
         client = get_http_client()
@@ -174,7 +173,7 @@ async def sync_feed(cat_id: str) -> bool:
 
         if to_save:
             try:
-                await db.save_news_items(cat_id, to_save, current_time)
+                await db.save_news_items(cat_id, to_save)
             except Exception as ex:
                 logger.error(f"SQLite 新闻写入失败 ({cat_id}): {ex}")
 
@@ -220,7 +219,7 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
     full_content: str | None = None
     link_hash = hashlib.md5(item_link.encode("utf-8")).hexdigest()
     try:
-        article = await db.get_article(cat, link_hash)
+        article = await db.get_article(link_hash)
         if article and article.get("full_content"):
             full_content = article["full_content"]
             full_content_cache[item_link] = full_content
@@ -518,7 +517,7 @@ async def get_article(
         query_key = target_id or url
         if query_key:
             try:
-                doc = await db.get_article(cat, query_key)
+                doc = await db.get_article(query_key)
                 if doc:
                     item = deserialize_item(doc)
             except Exception as ex:
