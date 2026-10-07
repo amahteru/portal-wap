@@ -24,7 +24,7 @@ aqi_cache: TTLCache = TTLCache(maxsize=300, ttl=1800)
 
 def get_weather_desc(condition_dict: dict) -> str:
     desc = "未知"
-    for k in ("lang_zh-cn", "lang_zh", "lang_xx", "weatherDesc"):
+    for k in ("lang_zh-cn", "lang_xx", "weatherDesc"):
         val_list = condition_dict.get(k)
         if val_list and isinstance(val_list, list) and len(val_list) > 0:
             item = val_list[0]

@@ -1,7 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 from core.http import close_http_client, get_http_client
 from core.ui import render_xhtml
-from routers.news import news_router, start_news_tasks, stop_news_tasks
+from routers.news import BEIJING_TZ, news_router, start_news_tasks, stop_news_tasks
 from routers.weather import weather_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -21,8 +21,6 @@ SPEEDDIAL_PATH = os.path.join(BASE_DIR, "speeddial-icon.png")
 HAS_FAVICON = os.path.exists(FAVICON_PATH)
 HAS_SPEEDDIAL = os.path.exists(SPEEDDIAL_PATH)
 STATIC_CACHE_HEADERS = {"Cache-Control": "public, max-age=604800, immutable"}
-
-BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def get_beijing_date() -> str:
@@ -100,16 +98,16 @@ async def index(request: Request):
             </div>
             <hr/>
             <b>:: 社交互动 ::</b>
-            <div class="item even">[1] <a href="//qq.ekiz.top" accesskey="2">QQ群互通</a></div>
-            <div class="item odd">[2] <a href="//qq.ekiz.top/wml" accesskey="3">互通(WAP版)</a></div>
+            <div class="item even">[1] <a href="//qq.ekiz.top" accesskey="1">QQ群互通</a></div>
+            <div class="item odd">[2] <a href="//qq.ekiz.top/wml" accesskey="2">互通(WAP版)</a></div>
             <hr/>
             <b>:: 资讯生活 ::</b>
-            <div class="item odd">[3] <a href="/news/category/importnews" accesskey="4">新闻网站</a></div>
-            <div class="item even">[4] <a href="/weather" accesskey="5">天气预报</a></div>
+            <div class="item odd">[3] <a href="/news/category/importnews" accesskey="3">新闻网站</a></div>
+            <div class="item even">[4] <a href="/weather" accesskey="4">天气预报</a></div>
             <hr/>
             <b>:: 工具娱乐 ::</b>
-            <div class="item odd">[5] <a href="//ai.ekiz.top" accesskey="9">AI普通版</a></div>
-            <div class="item even">[6] <a href="//ai.ekiz.top/nokia" accesskey="0">AI(WAP版)</a></div>
+            <div class="item odd">[5] <a href="//ai.ekiz.top" accesskey="5">AI普通版</a></div>
+            <div class="item even">[6] <a href="//ai.ekiz.top/nokia" accesskey="6">AI(WAP版)</a></div>
         </div>
         <div class="nav">
             浙ICP备08012345号-1<br/>
@@ -136,3 +134,11 @@ async def speeddial_icon():
     if HAS_SPEEDDIAL:
         return FileResponse(SPEEDDIAL_PATH, media_type="image/png", headers=STATIC_CACHE_HEADERS)
     return Response(status_code=404)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 7860))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, timeout_keep_alive=15)
+

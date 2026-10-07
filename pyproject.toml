@@ -5,3 +5,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501"]
+
+[tool.pyright]
+include = ["."]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]

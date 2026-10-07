@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import feedparser
-import trafilatura
 from cachetools import TTLCache
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
@@ -24,10 +23,11 @@ logger = logging.getLogger(__name__)
 
 news_router = APIRouter()
 
-articles_by_hash: dict[str, dict[str, Any]] = {}
+articles_by_hash: TTLCache = TTLCache(maxsize=500, ttl=86400)
 full_content_cache: TTLCache = TTLCache(maxsize=500, ttl=86400)
 image_cache: TTLCache = TTLCache(maxsize=500, ttl=86400)
 image_fail_cache: TTLCache = TTLCache(maxsize=500, ttl=1800)
+_feed_locks: dict[str, asyncio.Lock] = {}
 
 feedparser.USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -102,43 +102,47 @@ def format_entry(item: Any, cat_id: str) -> dict[str, Any]:
     }
 
 
-async def sync_feed(cat_id: str) -> bool:
+async def sync_feed(cat_id: str, force: bool = False) -> bool:
     if cat_id not in RSS_FEEDS:
         return False
 
-    current_items = news_cache[cat_id]
+    lock = _feed_locks.setdefault(cat_id, asyncio.Lock())
+    async with lock:
+        current_items = news_cache[cat_id]
+        if not force and current_items:
+            return True
 
-    try:
-        client = get_http_client()
-        resp = await client.get(
-            RSS_FEEDS[cat_id]["url"], headers={"User-Agent": feedparser.USER_AGENT}, timeout=10.0
-        )
-        if resp.status_code != 200:
+        try:
+            client = get_http_client()
+            resp = await client.get(
+                RSS_FEEDS[cat_id]["url"], headers={"User-Agent": feedparser.USER_AGENT}, timeout=10.0
+            )
+            if resp.status_code != 200:
+                return False
+
+            feed = await asyncio.to_thread(feedparser.parse, resp.content)
+            new_entries = feed.entries
+            if not new_entries:
+                return False
+
+            existing_links = {it.get("link", "") for it in current_items}
+            added_count = 0
+
+            for entry in new_entries:
+                entry_dict = format_entry(entry, cat_id)
+                link = entry_dict.get("link", "")
+                if link and link not in existing_links:
+                    current_items.insert(added_count, entry_dict)
+                    link_hash = entry_dict.get("link_hash")
+                    if link_hash:
+                        articles_by_hash[link_hash] = entry_dict
+                    added_count += 1
+
+            news_cache[cat_id] = current_items[:300]
+            return True
+        except Exception as e:
+            logger.error(f"同步新闻失败 ({cat_id}): {e}")
             return False
-
-        feed = await asyncio.to_thread(feedparser.parse, resp.content)
-        new_entries = feed.entries
-        if not new_entries:
-            return False
-
-        existing_links = {it.get("link", "") for it in current_items}
-        added_count = 0
-
-        for entry in new_entries:
-            entry_dict = format_entry(entry, cat_id)
-            link = entry_dict.get("link", "")
-            if link and link not in existing_links:
-                current_items.insert(added_count, entry_dict)
-                link_hash = entry_dict.get("link_hash")
-                if link_hash:
-                    articles_by_hash[link_hash] = entry_dict
-                added_count += 1
-
-        news_cache[cat_id] = current_items[:300]
-        return True
-    except Exception as e:
-        logger.error(f"同步新闻失败 ({cat_id}): {e}")
-        return False
 
 
 async def background_refresher() -> None:
@@ -146,7 +150,7 @@ async def background_refresher() -> None:
     while True:
         try:
             for cat_id in RSS_FEEDS:
-                await sync_feed(cat_id)
+                await sync_feed(cat_id, force=True)
                 await asyncio.sleep(2)
             await asyncio.sleep(CACHE_TTL)
         except asyncio.CancelledError:
@@ -154,6 +158,7 @@ async def background_refresher() -> None:
         except Exception as e:
             logger.error(f"新闻后台刷新任务循环异常，将在60秒后重试: {e}")
             await asyncio.sleep(60)
+
 
 
 async def get_news_items(cat_id: str) -> list:
@@ -242,9 +247,6 @@ async def fetch_article_content(item_link: str, cat: str) -> str | None:
                         text = re.sub(r'<(?:[^>"\']|"[^"]*"|\'[^\']*\')*>', " ", text)
                         lines = [line.strip() for line in text.split("\n") if line.strip()]
                         extracted = "\n".join(lines)
-
-                if not extracted:
-                    extracted = await asyncio.to_thread(trafilatura.extract, downloaded, favor_precision=True)
 
                 if extracted and len(extracted) > 10:
                     full_content = extracted
@@ -492,12 +494,7 @@ async def get_article(
     pub_str = item.get("published", "暂无时间信息")
     if pub_parsed:
         try:
-            if isinstance(pub_parsed, (int, float)):
-                epoch = float(pub_parsed)
-            elif hasattr(pub_parsed, "timetuple"):
-                epoch = float(calendar.timegm(pub_parsed.timetuple()))
-            else:
-                epoch = float(calendar.timegm(pub_parsed))
+            epoch = float(calendar.timegm(pub_parsed.timetuple() if hasattr(pub_parsed, "timetuple") else pub_parsed))
             pub_date = datetime.fromtimestamp(epoch, tz=BEIJING_TZ).strftime("%Y-%m-%d %H:%M")
         except Exception:
             pub_date = pub_str
